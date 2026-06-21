@@ -1,5 +1,5 @@
 """精简批量 — 每个方向2只，共10只"""
-import sys, json, time
+import sys, time
 from pathlib import Path
 from datetime import datetime
 
@@ -53,8 +53,10 @@ for i, (code, name, sector) in enumerate(STOCKS):
         out_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        with open(out_dir / f"{ts}_analysis.json", "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+        from agents.utils.md_utils import to_markdown
+
+        with open(out_dir / f"{ts}_analysis.md", "w", encoding="utf-8") as f:
+            f.write(to_markdown(result, title=f"分析结果 — {name} ({code})"))
 
         rating = result.get("rating", "?")
         print(f"  ▶ {name}: {rating} (信心 {result.get('confidence',0):.0%})")

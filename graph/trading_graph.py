@@ -17,12 +17,148 @@ from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph
 
 from config.default_config import get_config, set_config
+from agents.utils.md_utils import to_markdown
+from dataflows.market_cache import _to_jsonable
 from graph.setup import GraphSetup
 from graph.conditional_logic import ConditionalLogic
 from agents.utils.memory import TradingMemoryLog
 from agents.schemas import PortfolioDecision, TraderAction, PortfolioRating
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_msg(m) -> Dict:
+    """将 LangChain message 序列化为纯 dict"""
+    out = {"role": getattr(m, "type", "unknown")}
+    if hasattr(m, "name") and m.name:
+        out["name"] = m.name
+    content = getattr(m, "content", "")
+    if isinstance(content, list):
+        content = str(content)
+    out["content"] = str(content)[:8000] if content else ""
+
+    # 工具调用
+    if hasattr(m, "tool_calls") and m.tool_calls:
+        out["tool_calls"] = [
+            {"name": tc.get("name", ""), "args": str(tc.get("args", {}))[:2000]}
+            for tc in m.tool_calls
+        ]
+    # 工具响应
+    if hasattr(m, "tool_call_id") and m.tool_call_id:
+        out["tool_call_id"] = m.tool_call_id
+
+    return out
+
+
+def _render_trace_md(symbol: str, stock_name: str, trade_date: str,
+                     messages: list, final_state: Dict, result: Dict) -> List[str]:
+    """将 LLM 辩论轨迹渲染为 Markdown"""
+    lines = []
+    lines.append(f"# Agent 辩论轨迹 — {stock_name} ({symbol})")
+    lines.append(f"**交易日**: {trade_date} | **辩论轮数**: {result.get('debate_rounds',0)} | **风险轮数**: {result.get('risk_rounds',0)}")
+    lines.append("")
+
+    # 阶段标记
+    phase_idx = 0
+    phase_names = ["分析师调研", "研究员辩论", "风险辩论", "最终决策"]
+    phase_started = [False] * 4
+
+    for i, m in enumerate(messages):
+        role = getattr(m, "type", "unknown")
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            content = str(content)
+        content = str(content) if content else ""
+        name = getattr(m, "name", getattr(m, "additional_kwargs", {}).get("name", ""))
+
+        # 检测阶段切换
+        if content.startswith("Bull:") or content.startswith("Bear:") or name in ("bull_researcher", "bear_researcher"):
+            if not phase_started[1]:
+                phase_started[1] = True
+                lines.append("---")
+                lines.append("## 🔬 研究员多空辩论")
+                lines.append("")
+                phase_idx = 1
+        elif content.startswith("Aggressive:") or content.startswith("Conservative:") or content.startswith("Neutral:"):
+            if not phase_started[2]:
+                phase_started[2] = True
+                lines.append("---")
+                lines.append("## ⚖️ 风险管理辩论")
+                lines.append("")
+                phase_idx = 2
+        elif "**Rating**" in content or "**Action**" in content:
+            if not phase_started[3]:
+                phase_started[3] = True
+                lines.append("---")
+                lines.append("## 🏁 最终决策")
+                lines.append("")
+                phase_idx = 3
+
+        # 跳过 system / 空消息
+        if role == "system":
+            continue
+        if not content.strip():
+            continue
+
+        # 渲染消息
+        prefix_map = {
+            "Bull:": "📈", "Bear:": "📉",
+            "Aggressive:": "🔥", "Conservative:": "🛡️", "Neutral:": "⚖️",
+        }
+        emoji = ""
+        for prefix, e in prefix_map.items():
+            if content.startswith(prefix):
+                emoji = e
+                content = content[len(prefix):].strip()
+                break
+
+        label = f"**{name}**" if name else f"*{role}*"
+        if role == "tool":
+            label = f"🔧 工具: {name}"
+            lines.append(f"{label}")
+            lines.append(f"```")
+            lines.append(content[:2000])
+            lines.append(f"```")
+        elif role == "ai":
+            if emoji:
+                lines.append(f"### {emoji} {label}")
+            else:
+                lines.append(f"### 🤖 {label}")
+            lines.append("")
+            lines.append(content[:5000])
+            lines.append("")
+        elif role == "human":
+            lines.append(f"💬 {label}")
+            lines.append(f"> {content[:500]}")
+            lines.append("")
+
+    # 四大报告
+    lines.append("---")
+    lines.append("## 📊 各分析师报告")
+    lines.append("")
+    for key, title in [("fundamental", "基本面"), ("technical", "技术面"),
+                       ("sentiment", "舆论情绪"), ("policy", "政策面")]:
+        report = final_state.get(f"{key}_report", "")
+        if report:
+            lines.append(f"### {title}分析师报告")
+            lines.append("")
+            lines.append(report[:4000])
+            lines.append("")
+
+    # 最终决策详情
+    lines.append("---")
+    lines.append("## 🎯 最终决策详情")
+    lines.append("")
+    lines.append(f"| 指标 | 值 |")
+    lines.append(f"|------|-----|")
+    lines.append(f"| 评级 | {result['rating']} |")
+    lines.append(f"| 动作 | {result['action']} |")
+    lines.append(f"| 信心度 | {result['confidence']:.0%} |")
+    lines.append(f"| 辩论轮数 | {result.get('debate_rounds',0)} |")
+    lines.append(f"| 风险轮数 | {result.get('risk_rounds',0)} |")
+    lines.append("")
+
+    return lines
 
 
 class AStockTradingGraph:
@@ -202,6 +338,16 @@ class AStockTradingGraph:
         logger.info(f"开始分析: {stock_name} ({symbol}) 日期: {trade_date}")
 
         # ========================================================
+        # Phase -1: 设置缓存日期（公共数据 + 个股舆情均按交易日缓存）
+        # ========================================================
+        try:
+            from dataflows.market_cache import MarketDataCache
+            cache = MarketDataCache.get_instance()
+            cache.set_trade_date(trade_date)
+        except Exception:
+            pass
+
+        # ========================================================
         # Phase 0: 自动结算历史 pending 决策的收益
         # ========================================================
         self._settle_pending_returns(symbol, trade_date)
@@ -249,6 +395,9 @@ class AStockTradingGraph:
             "action": action,
             "confidence": confidence,
             "reports": reports,
+            "debate_rounds": final_state.get("investment_debate_state", {}).get("count", 0),
+            "risk_rounds": final_state.get("risk_debate_state", {}).get("count", 0),
+            "messages_count": len(final_state.get("messages", [])),
         }
 
         # 持久化决策
@@ -259,6 +408,9 @@ class AStockTradingGraph:
 
         # 保存结果到文件
         self._save_result(result)
+
+        # 保存完整 LLM 辩论轨迹
+        self._save_agent_trace(symbol, trade_date, stock_name, final_state, result)
 
         return result
 
@@ -418,36 +570,76 @@ class AStockTradingGraph:
         return rating, action, confidence
 
     def _save_result(self, result: Dict):
-        """保存分析结果到 ~/.astock_agent/results/，并同步到项目 results/"""
-        import subprocess
-
-        # 主存储：~/.astock_agent/results/
+        """保存分析结果到项目 data/results/ 目录（MD + JSON 双写）"""
         try:
-            home_dir = Path(self.config.get("results_dir", str(Path.home() / ".astock_agent" / "results")))
-            home_dir = home_dir.expanduser()
-            home_dir.mkdir(parents=True, exist_ok=True) if str(home_dir).startswith(str(Path.home())) else None
+            home_dir = Path(self.config.get("results_dir", str(Path(__file__).parent.parent / "data" / "results")))
+            home_dir.mkdir(parents=True, exist_ok=True)
 
-            filename = f"{result['symbol']}_{result['trade_date']}_analysis.json"
-            filepath = home_dir / filename
+            filename = f"{result['symbol']}_{result['trade_date']}_analysis"
+            md_path = home_dir / f"{filename}.md"
 
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-            logger.info(f"分析结果已保存: {filepath}")
+            md = to_markdown(result, title=f"分析结果 — {result.get('stock_name','')} ({result['symbol']})")
+            md_path.write_text(md, encoding="utf-8")
 
-            # 同步到项目 results/ 文件夹
-            export_dir = Path(__file__).parent.parent / "results"
-            export_dir.mkdir(parents=True, exist_ok=True)
-            dest = export_dir / filename
-            content = json.dumps(result, ensure_ascii=False, indent=2)
-            try:
-                dest.write_text(content, encoding="utf-8")
-            except PermissionError:
-                subprocess.run([
-                    "powershell", "-Command",
-                    f"Set-Content -Path '{dest}' -Value '{content}' -Encoding UTF8"
-                ], capture_output=True)
+            json_path = home_dir / f"{filename}.cache.json"
+            json_path.write_text(
+                json.dumps(_to_jsonable(result), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            logger.info(f"分析结果已保存: {md_path}")
         except Exception as e:
             logger.warning(f"结果保存失败: {e}")
+
+    def _save_agent_trace(self, symbol: str, trade_date: str, stock_name: str,
+                          final_state: Dict, result: Dict):
+        """保存完整 LLM 辩论轨迹到 data/agent_cache/{symbol}/ 目录"""
+        try:
+            base_dir = Path(self.config.get("agent_cache_dir",
+                            str(Path(__file__).parent.parent / "data" / "agent_cache")))
+            agent_dir = base_dir / symbol
+            agent_dir.mkdir(parents=True, exist_ok=True)
+
+            messages = final_state.get("messages", [])
+
+            # 构建结构化 trace（JSON）
+            trace = {
+                "symbol": symbol,
+                "stock_name": stock_name,
+                "trade_date": trade_date,
+                "rounds": {
+                    "investment_debate": final_state.get("investment_debate_state", {}).get("count", 0),
+                    "risk_debate": final_state.get("risk_debate_state", {}).get("count", 0),
+                },
+                "messages": [_serialize_msg(m) for m in messages],
+                "reports": {
+                    "fundamental": final_state.get("fundamental_report", ""),
+                    "technical": final_state.get("technical_report", ""),
+                    "sentiment": final_state.get("sentiment_report", ""),
+                    "policy": final_state.get("policy_report", ""),
+                },
+                "final_decision": final_state.get("final_decision", ""),
+                "parsed_result": {
+                    "rating": result["rating"],
+                    "action": result["action"],
+                    "confidence": result["confidence"],
+                },
+            }
+
+            # JSON（完整结构化，供程序恢复）
+            json_path = agent_dir / f"{trade_date}_agent_trace.cache.json"
+            json_path.write_text(
+                json.dumps(_to_jsonable(trace), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            # MD（人类可读的对话流）
+            md_path = agent_dir / f"{trade_date}_agent_trace.md"
+            md_lines = _render_trace_md(symbol, stock_name, trade_date, messages, final_state, result)
+            md_path.write_text("\n".join(md_lines), encoding="utf-8")
+
+            logger.info(f"辩论轨迹已保存: {agent_dir}")
+        except Exception as e:
+            logger.warning(f"辩论轨迹保存失败: {e}")
 
     def run_batch(self, symbols: List[str], trade_date: str = None,
                   stock_names: List[str] = None) -> List[Dict]:

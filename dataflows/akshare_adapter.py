@@ -423,6 +423,63 @@ def get_market_sentiment() -> Optional[Dict[str, Any]]:
     return result
 
 
+@_safe_akshare_call
+def get_market_sentiment_history(days: int = 30) -> List[Dict[str, Any]]:
+    """
+    获取近 N 个交易日市场情绪历史（基于上证指数日线数据作为代理）
+
+    返回按日期升序排列的列表，每条记录含:
+      date / close / change_pct / volume / amount
+    """
+    import akshare as ak
+
+    end = datetime.now()
+    start = end - timedelta(days=days + 15)
+
+    try:
+        df = ak.stock_zh_index_daily(symbol="sh000001")
+    except Exception:
+        try:
+            df = ak.stock_zh_index_daily_em(symbol="sh000001")
+        except Exception:
+            logger.warning("无法获取指数历史数据")
+            return []
+
+    if df is None or df.empty:
+        return []
+
+    date_col = "date" if "date" in df.columns else "日期"
+    df[date_col] = pd.to_datetime(df[date_col])
+    start_str = start.strftime("%Y-%m-%d")
+    end_str = end.strftime("%Y-%m-%d")
+    df = df[(df[date_col] >= start_str) & (df[date_col] <= end_str)]
+    df = df.sort_values(date_col)
+
+    if df.empty:
+        return []
+
+    results = []
+    for _, row in df.iterrows():
+        d = str(row[date_col])[:10]
+        close_val = float(row.get("close", row.get("收盘", 0)))
+        open_val = float(row.get("open", row.get("开盘", 0)))
+        high_val = float(row.get("high", row.get("最高", 0)))
+        low_val = float(row.get("low", row.get("最低", 0)))
+        vol = float(row.get("volume", row.get("成交量", 0)))
+        amt = float(row.get("amount", row.get("成交额", 0))) if ("amount" in row or "成交额" in df.columns) else 0
+
+        prev_close = results[-1]["close"] if results else open_val
+        chg = round((close_val / prev_close - 1) * 100, 2) if prev_close and prev_close > 0 else 0
+
+        results.append({
+            "date": d, "open": open_val, "high": high_val, "low": low_val,
+            "close": close_val, "volume": vol, "amount": amt, "change_pct": chg,
+        })
+
+    logger.info(f"市场情绪历史: {len(results)} 天 (上证指数)")
+    return results
+
+
 # ============================================================
 # 指数数据
 # ============================================================
@@ -477,3 +534,60 @@ def get_cn_stock_news(symbol: str, limit: int = 20) -> Optional[List[Dict]]:
     except Exception:
         pass
     return []
+
+
+# ============================================================
+# 个股价格历史（用于多日缓存回填）
+# ============================================================
+
+def get_stock_price_history(symbol: str, days: int = 30) -> List[Dict]:
+    """
+    获取个股日线价格历史（裸数据，按日拆分）
+
+    Returns:
+        [{"date": "2026-06-18", "open": ..., "close": ..., "volume": ..., "change_pct": ...}, ...]
+    """
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days + 15)).strftime("%Y%m%d")
+
+    df = get_stock_daily(symbol, start_date=start_date, end_date=end_date)
+    if df is None or df.empty:
+        logger.warning(f"个股价格历史获取失败: {symbol}")
+        return []
+
+    results = []
+    for _, row in df.iterrows():
+        date_val = row.get("date")
+        if date_val is None:
+            continue
+        if hasattr(date_val, "strftime"):
+            date_str = date_val.strftime("%Y-%m-%d")
+        else:
+            date_str = str(date_val)[:10]
+        results.append({
+            "date": date_str,
+            "open": _safe_float(row.get("open")),
+            "high": _safe_float(row.get("high")),
+            "low": _safe_float(row.get("low")),
+            "close": _safe_float(row.get("close")),
+            "volume": _safe_float(row.get("volume")),
+            "amount": _safe_float(row.get("amount")),
+            "change_pct": _safe_float(row.get("pct_change", row.get("change_pct"))),
+        })
+
+    results = [r for r in results if r["close"] is not None]
+    results.sort(key=lambda r: r["date"], reverse=True)
+    return results[:days]
+
+
+def _safe_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        import numpy as np
+        if np.isnan(f):
+            return None
+        return f
+    except (ValueError, TypeError):
+        return None

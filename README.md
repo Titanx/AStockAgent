@@ -7,7 +7,7 @@
 本项目架构设计参考了以下两个优秀项目：
 
 - **[TradingAgents](https://github.com/TauricResearch/TradingAgents)** — 多智能体交易框架，借鉴了其 Analyst→Researcher→Trader→Risk Manager 的多 Agent 协作范式，以及多空辩论（Bull/Bear Debate）和风险讨论（Aggressive/Conservative/Neutral）的设计思路。
-- **[Agent-Reach](https://github.com/your-repo/Agent-Reach)** — 多平台信息获取框架，借鉴了其多渠道舆论监控和数据聚合的设计模式，项目中舆论模块保留了对其 Channel 接口的可选兼容。
+- **[Agent-Reach](https://github.com/your-repo/Agent-Reach)** — 多平台信息获取框架，借鉴了其多渠道舆论监控和数据聚合的设计模式。
 
 ## 架构概览
 
@@ -48,7 +48,7 @@
 └─────────────────────────────────────┘
        │
        ▼
-  最终输出：评级 + 行动计划 + 置信度
+  最终输出：评级 + 行动计划 + 置信度 + 辩论轨迹
 ```
 
 ## 快速开始
@@ -87,13 +87,19 @@ DEEPSEEK_API_KEY=your_deepseek_api_key
 
 ### 运行
 
-**单只股票分析：**
+**单只股票测试：**
 
 ```bash
-python sample_analyze.py
+python tests/test_one_stock.py
 ```
 
-**批量分析（25 只股票，5 个行业 × 5 只）：**
+**10 只股票快速测试：**
+
+```bash
+python tests/test_10stocks.py
+```
+
+**25 只股票批量分析（5 板块 × 5 只）：**
 
 ```bash
 python batchanalyze.py
@@ -105,50 +111,169 @@ python batchanalyze.py
 python main.py --code 600519 --date 2026-06-20
 ```
 
+**生成每日分析报告：**
+
+```bash
+python scripts/generate_daily_report.py
+# 输出: data/{date}_daily_report.md
+```
+
 ## 项目结构
 
 ```
 AStockAgent/
 ├── agents/
-│   ├── analysts/         # 4 个分析师 Agent
-│   │   ├── fundamental_analyst.py   # 基本面
-│   │   ├── technical_analyst.py     # 技术面
-│   │   ├── sentiment_analyst.py     # 舆论情绪
-│   │   └── policy_analyst.py        # 政策面
-│   ├── researchers/      # 多空研究员
-│   │   ├── bull_researcher.py       # 多方 + 研究管理
-│   │   └── bear_researcher.py       # 空方
-│   ├── trader.py         # 交易员（A股 T+1）
-│   ├── risk_mgmt.py      # 风控讨论 + 组合管理
-│   ├── schemas.py        # Pydantic 数据模型
-│   └── utils/            # 工具函数 + 记忆系统
+│   ├── analysts/             # 4 个分析师 Agent
+│   │   ├── fundamental_analyst.py   # 基本面 (财务指标/估值)
+│   │   ├── technical_analyst.py     # 技术面 (OHLCV/MA/量价)
+│   │   ├── sentiment_analyst.py     # 舆论情绪 (雪球/新闻/微博)
+│   │   └── policy_analyst.py        # 政策面 (板块/北向/情绪)
+│   ├── researchers/          # 多空研究员
+│   │   └── bull_researcher.py       # 多方+空方+研究管理三位一体
+│   ├── risk_mgmt.py          # 风控讨论 + 投资经理终决
+│   ├── trader.py             # 交易员（A股 T+1 规则）
+│   ├── schemas.py            # Pydantic 数据模型
+│   └── utils/
+│       ├── agent_utils.py    # 工具函数 (个股数据/市场数据/舆论)
+│       ├── md_utils.py       # Markdown 渲染 (to_markdown)
+│       └── memory.py         # 交易记忆系统
 ├── dataflows/
-│   ├── interface.py      # 统一数据接口
-│   └── akshare_adapter.py # AKShare 适配器（多源回退）
+│   ├── interface.py          # 统一数据路由 (route_to_vendor)
+│   ├── akshare_adapter.py    # AKShare 适配器 (15+ API，三级回退)
+│   └── market_cache.py       # 多级缓存系统 (内存→磁盘，MD+JSON 双写)
 ├── graph/
-│   ├── trading_graph.py  # LangGraph 主图
-│   ├── setup.py          # 图构建配置
-│   └── conditional_logic.py # 条件路由
+│   ├── trading_graph.py      # LangGraph 主图 + 结果保存 + 辩论轨迹
+│   ├── setup.py              # 图构建配置 + AgentState 类型定义
+│   └── conditional_logic.py  # 条件路由
 ├── opinion/
-│   ├── xueqiu_monitor.py # 雪球监控
-│   └── sentiment_aggregator.py # 情绪聚合
+│   ├── xueqiu_monitor.py     # 雪球监控 (行情/帖子/搜索)
+│   └── sentiment_aggregator.py # 多源情绪聚合
 ├── config/
-│   └── default_config.py # 项目配置
-├── main.py               # CLI 入口
-├── batchanalyze.py       # 批量分析脚本
-├── sample_analyze.py     # 单股分析示例
-└── test_akshare.py       # 数据源连通性测试
+│   └── default_config.py     # 项目配置
+├── scripts/
+│   ├── generate_daily_report.py  # 生成每日分析汇总 MD
+│   ├── summary.py                # 批量结果快速摘要
+│   ├── verify_sector_history.py  # 板块历史数据校验
+│   └── backfill_sector_history.py # 板块历史回填
+├── tests/
+│   ├── test_one_stock.py     # 单股快速测试
+│   └── test_10stocks.py      # 10 股批量测试
+├── main.py                   # CLI 入口
+├── batchanalyze.py           # 批量分析主脚本
+├── quick_batch.py            # 精简批量脚本
+├── .env.example              # 环境变量模板
+└── .gitignore
 ```
+
+## 数据缓存体系
+
+系统采用**多层缓存架构**，避免重复拉取 AKShare / 雪球 API，加速分析并降低调用成本。
+
+### 缓存层级
+
+```
+data/
+├── market_cache/         # 公共数据缓存 (按日期)
+│   ├── {date}_get_market_sentiment.{md,cache.json}
+│   ├── {date}_get_sector_boards.{md,cache.json}
+│   └── {date}_get_north_flow.{md,cache.json}
+│
+├── stock_cache/          # 个股数据缓存 (按symbol子目录)
+│   └── {symbol}/         # 如 600438/
+│       ├── {date}_get_stock_price_data.{md,cache.json}
+│       ├── {date}_get_stock_realtime_quote.{md,cache.json}
+│       ├── {date}_get_stock_financials.{md,cache.json}
+│       └── {date}_price_daily_{day}.{md,cache.json}  (30天日线)
+│
+├── opinion_cache/        # 舆论数据缓存 (按symbol子目录)
+│   └── {symbol}/         # 如 600438/
+│       ├── {date}_get_opinion_report.{md,cache.json}
+│       └── {date}_get_xueqiu_hot_posts.{md,cache.json}
+│
+├── agent_cache/          # LLM 辩论轨迹 (按symbol子目录)
+│   └── {symbol}/
+│       └── {date}_agent_trace.{md,cache.json}
+│
+├── results/              # 分析结果 (MD + JSON 双写)
+│   └── {symbol}_{date}_analysis.{md,cache.json}
+│
+└── batch_results/        # 批量分析结果 (batchanalyze 输出)
+    └── {symbol}/         # analysis.md + thinking.md
+```
+
+### 缓存策略
+
+| 数据类型 | 缓存方式 | 跨会话恢复 | 历史数据 |
+|----------|----------|:--:|:--:|
+| 市场情绪/板块排行 | 按交易日 `.cache.json` | ✅ preload() | ✅ 30天 |
+| 北向资金 | 按交易日 `.cache.json` | ✅ preload() | ✅ 逐日累积 |
+| 个股行情 (日线) | 按交易日 `.cache.json` | ✅ preload() | ✅ 30天 |
+| 个股实时行情 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
+| 个股财务指标 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
+| 舆论情绪报告 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
+| 雪球热门帖子 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
+| LLM 辩论轨迹 | `.md` + `.cache.json` | ❌ 每次新生成 | ❌ 每次覆盖 |
+
+**`preload()` 流程**: 扫描磁盘缓存→实时拉取缺失→历史回填→舆情恢复→个股恢复→价格历史加载
 
 ## 功能特点
 
 - **多智能体协作** — 4个分析师 + 多空辩论 + 3方风控讨论，模拟真实投研流程
-- **多源数据融合** — AKShare + 东方财富 + 新浪 + 腾讯 + 同花顺，自动回退
+- **多源数据融合** — AKShare + 东方财富 + 新浪 + 腾讯 + 同花顺 + 雪球 + 微博，自动回退
+- **智能缓存系统** — 内存→磁盘双层缓存，MD (人类可读) + JSON (程序恢复) 双写，跨会话复用
+- **历史数据回填** — 市场情绪/板块行情/北向资金/个股日线 支持 30 天历史回溯
+- **辩论轨迹留存** — 每次分析完整 LLM 对话流存入 `agent_cache/`，可回溯审查
+- **按股归拢目录** — opinion_cache / stock_cache / agent_cache 按 symbol 子目录组织
+- **Markdown 输出** — 所有数据/结果/报告统一 MD 格式，人类直接可读
 - **舆论监控** — 雪球热门帖子、微博情绪、财经新闻聚合
-- **差异化评级** — Underweight / Hold / Overweight + 置信度
+- **差异化评级** — Overweight / Hold / Underweight + 置信度
 - **T+1 交易规则** — 完全符合 A 股交易制度
 - **非交易日处理** — 自动回退到最近交易日数据
-- **结果持久化** — 按股票代码分类存储，含思考过程 Markdown
+- **批量分析报告** — 一键生成 25 只股票板块热力图 + 投资逻辑汇总
+
+## 分析流程
+
+```
+[1] 预加载缓存 (preload)
+     ├─ 公共数据: 市场情绪 + 板块排行 + 北向资金
+     ├─ 历史回填: 30 天市场数据 / 板块数据
+     ├─ 个股恢复: 行情 + 财务 + 舆情 + 价格历史
+     └─ 辩论轨迹: 从磁盘恢复已有分析
+
+[2] 四维分析师并行调研
+     ├─ 🔬 基本面: ROE/ROA/毛利率/PE/PB (同花顺)
+     ├─ 📈 技术面: OHLCV/MA5/MA10/MA20/量价 (东方财富)
+     ├─ 💬 情绪面: 雪球帖子+行情 / 东财新闻 / 微博 (JinaReader)
+     └─ 🏛️ 政策面: 板块动量 / 北向资金 / 市场情绪
+
+[3] 多空辩论 (3 轮)
+     ├─ 📈 Bull Researcher: 多方论点
+     ├─ 📉 Bear Researcher: 空方反驳
+     └─ Research Manager: 辩论裁决
+
+[4] 交易决策
+     └─ Trader: 生成交易计划 (基于 A 股 T+1 规则)
+
+[5] 风险讨论 (3 轮)
+     ├─ 🔥 Aggressive: 激进派观点
+     ├─ 🛡️ Conservative: 保守派观点
+     ├─ ⚖️ Neutral: 中性派观点
+     └─ Portfolio Manager: 最终评级 (Overweight/Hold/Underweight)
+
+[6] 输出保存
+     ├─ results/: 分析结果 (MD + JSON)
+     └─ agent_cache/: 完整辩论轨迹 (MD + JSON)
+```
+
+## 覆盖股票池 (25 只)
+
+| 板块 | 股票 |
+|------|------|
+| ☀️ 光伏 | 通威股份、隆基绿能、阳光电源、天合光能、迈为股份 |
+| 💨 风电 | 金风科技、明阳智能、东方电缆、新强联、龙源电力 |
+| 🧠 AI | 科大讯飞、寒武纪、浪潮信息、中际旭创、同花顺 |
+| 🔋 储能 | 宁德时代、亿纬锂能、国轩高科、赣锋锂业、上海电气 |
+| 👁️ 视觉 | 海康威视、大华股份、德赛西威、中科创达、韦尔股份 |
 
 ## License
 

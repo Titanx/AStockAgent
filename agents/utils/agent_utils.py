@@ -5,12 +5,13 @@ Agent 工具函数
 函数通过 @tool 装饰器暴露给 LLM，或作为 ToolNode 使用。
 """
 
-import json
 import logging
 from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime, timedelta
 
 import pandas as pd
+
+from .md_utils import to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,16 @@ def get_stock_price_data(symbol: str, days: int = 60) -> str:
         symbol: 股票代码，如 "600519" 或 "000001"
         days: 回溯天数（最大365）
     """
+    # ———— 缓存优先 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cached = cache.get_stock_data(symbol, "get_stock_price_data")
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     from dataflows.interface import route_to_vendor
     from config.default_config import get_config
 
@@ -41,7 +52,6 @@ def get_stock_price_data(symbol: str, days: int = 60) -> str:
     )
 
     if df is None or df.empty:
-        # Fallback: try AKShare directly
         try:
             from dataflows.akshare_adapter import get_stock_daily as _get_daily
             df = _get_daily(symbol, start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"))
@@ -59,7 +69,6 @@ def get_stock_price_data(symbol: str, days: int = 60) -> str:
     change_pct = ((close / first.get("close", first.get("收盘", close)) - 1) * 100
                   if first.get("close", first.get("收盘", 0)) else 0)
 
-    # 计算技术统计
     closes = [float(recent.iloc[i].get("close", recent.iloc[i].get("收盘", 0)))
               for i in range(len(recent))]
     ma5 = sum(closes[-5:]) / min(5, len(closes[-5:])) if closes else 0
@@ -69,7 +78,7 @@ def get_stock_price_data(symbol: str, days: int = 60) -> str:
     high = max(closes[-20:]) if len(closes) >= 20 else max(closes)
     low = min(closes[-20:]) if len(closes) >= 20 else min(closes)
 
-    return json.dumps({
+    output = to_markdown({
         "symbol": symbol,
         "period": f"最近{days}个交易日",
         "latest_close": close,
@@ -88,18 +97,48 @@ def get_stock_price_data(symbol: str, days: int = 60) -> str:
             }
             for i in range(min(5, len(closes)), 0, -1)
         ],
-    }, ensure_ascii=False, indent=2)
+    }, title=f"行情数据 — {symbol}")
+
+    # ———— 写入缓存 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cache.set_stock_data(symbol, "get_stock_price_data", output)
+    except Exception:
+        pass
+
+    return output
 
 
 def get_stock_realtime_quote(symbol: str) -> str:
     """获取A股实时行情"""
+    # ———— 缓存优先 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cached = cache.get_stock_data(symbol, "get_stock_realtime_quote")
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     from dataflows.interface import route_to_vendor
 
     data = route_to_vendor("get_stock_realtime", symbol)
     if data is None:
         return f"无法获取 {symbol} 实时行情"
 
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    output = to_markdown(data, title=f"实时行情 — {symbol}")
+
+    # ———— 写入缓存 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cache.set_stock_data(symbol, "get_stock_realtime_quote", output)
+    except Exception:
+        pass
+
+    return output
 
 
 # ============================================================
@@ -113,6 +152,16 @@ def get_stock_financials(symbol: str) -> str:
     Args:
         symbol: 股票代码
     """
+    # ———— 缓存优先 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cached = cache.get_stock_data(symbol, "get_stock_financials")
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     from dataflows.interface import route_to_vendor
 
     indicators = route_to_vendor("get_financial_indicators", symbol)
@@ -122,10 +171,22 @@ def get_stock_financials(symbol: str) -> str:
 
     try:
         if hasattr(indicators, 'to_dict'):
-            # 取最近4期
-            recent = indicators.head(4) if hasattr(indicators, 'head') else indicators
-            return json.dumps(recent.to_dict(orient="records"), ensure_ascii=False, indent=2)
-        return str(indicators)
+            if '报告期' in indicators.columns:
+                indicators = indicators.sort_values('报告期', ascending=False)
+            recent = indicators.head(4)
+            output = to_markdown(recent, title=f"财务指标 — {symbol}")
+        else:
+            output = str(indicators)
+
+        # ———— 写入缓存 ————
+        try:
+            from dataflows.market_cache import MarketDataCache
+            cache = MarketDataCache.get_instance()
+            cache.set_stock_data(symbol, "get_stock_financials", output)
+        except Exception:
+            pass
+
+        return output
     except Exception as e:
         return f"财务数据解析失败: {e}"
 
@@ -135,28 +196,41 @@ def get_stock_financials(symbol: str) -> str:
 # ============================================================
 
 def get_market_sentiment_data() -> str:
-    """获取A股整体市场情绪"""
+    """获取A股整体市场情绪（含近期趋势）"""
     from dataflows.interface import route_to_vendor
+    from dataflows.market_cache import MarketDataCache
 
     data = route_to_vendor("get_market_sentiment")
     if data is None:
         return "无法获取市场情绪数据"
 
-    return json.dumps(data, ensure_ascii=False, indent=2)
+    # 附上近期历史趋势
+    parts = [to_markdown(data, title="今日市场情绪")]
+    try:
+        cache = MarketDataCache.get_instance()
+        history = cache.get_history("get_market_sentiment", days=10)
+        if len(history) > 1:
+            parts.append("\n## 近期趋势（上证指数）")
+            parts.append(to_markdown([h["data"] for h in history], title=""))
+    except Exception:
+        pass
+
+    return "\n\n".join(parts)
 
 
 def get_north_flow_data(days: int = 10) -> str:
     """获取北向资金流向"""
     from dataflows.interface import route_to_vendor
 
-    df = route_to_vendor("get_north_flow", days=days)
-    if df is None or df.empty:
+    data = route_to_vendor("get_north_flow", days=days)
+    if data is None:
         return "无法获取北向资金数据"
 
-    try:
-        return df.tail(days).to_string()
-    except Exception:
-        return str(df)
+    if isinstance(data, list):
+        return to_markdown(data[-days:], title="北向资金流向")
+    if data.empty:
+        return "无法获取北向资金数据"
+    return to_markdown(data.tail(days), title="北向资金流向")
 
 
 # ============================================================
@@ -164,22 +238,54 @@ def get_north_flow_data(days: int = 10) -> str:
 # ============================================================
 
 def get_sector_data() -> str:
-    """获取行业板块行情"""
+    """获取行业板块行情（含近期趋势摘要）"""
     from dataflows.interface import route_to_vendor
+    from dataflows.market_cache import MarketDataCache
 
-    df = route_to_vendor("get_sector_boards")
-    if df is None or df.empty:
+    data = route_to_vendor("get_sector_boards")
+    if data is None:
         return "无法获取板块数据"
 
+    if isinstance(data, list):
+        # 从缓存恢复的 list[dict]，直接排序截取
+        sorted_data = sorted(data, key=lambda r: r.get("涨跌幅", 0), reverse=True)
+        top_bottom = sorted_data[:10] + sorted_data[-10:]
+    else:
+        if data.empty:
+            return "无法获取板块数据"
+        if "涨跌幅" in data.columns:
+            sorted_df = data.sort_values("涨跌幅", ascending=False)
+            top_bottom_df = pd.concat([sorted_df.head(10), sorted_df.tail(10)])
+            top_bottom = top_bottom_df.to_dict(orient="records")
+        else:
+            top_bottom = data.head(15).to_dict(orient="records")
+
+    parts = [to_markdown(top_bottom, title="行业板块行情")]
+
+    # 附上近期历史趋势摘要
     try:
-        # 只返回收益率前10和后10
-        if "涨跌幅" in df.columns:
-            sorted_df = df.sort_values("涨跌幅", ascending=False)
-            top_bottom = pd.concat([sorted_df.head(10), sorted_df.tail(10)])
-            return top_bottom[["名称", "涨跌幅", "领涨股"]].to_string() if "领涨股" in df.columns else top_bottom.to_string()
-        return df.head(15).to_string()
+        cache = MarketDataCache.get_instance()
+        history = cache.get_history("get_sector_boards", days=10)
+        if len(history) > 1:
+            trend_rows = []
+            for item in history:
+                d = item["data"]
+                date = item["date"]
+                rising = sum(1 for r in d if isinstance(r, dict) and r.get("涨跌幅", 0) > 0)
+                falling = sum(1 for r in d if isinstance(r, dict) and r.get("涨跌幅", 0) < 0)
+                total = max(rising + falling, 1)
+                trend_rows.append({
+                    "日期": date,
+                    "上涨板块": rising,
+                    "下跌板块": falling,
+                    "上涨比例": f"{rising/total*100:.0f}%",
+                })
+            parts.append("\n## 近期板块涨跌结构")
+            parts.append(to_markdown(trend_rows, title=""))
     except Exception:
-        return str(df.head(10))
+        pass
+
+    return "\n\n".join(parts)
 
 
 # ============================================================
@@ -191,18 +297,39 @@ def get_opinion_report(symbol: str, stock_name: str = "") -> str:
     获取个股舆论情绪报告
 
     整合雪球帖子、财经新闻等多源数据。
+    个股舆情结果按 (symbol, trade_date) 缓存到磁盘，同交易日不重复拉取。
 
     Args:
         symbol: A股代码
         stock_name: 股票名称（可选）
     """
+    # ———— 缓存优先 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cached = cache.get_opinion(symbol, "get_opinion_report")
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     try:
         from opinion.sentiment_aggregator import aggregate_sentiment
         from config.default_config import get_config
 
         config = get_config()
         result = aggregate_sentiment(symbol, stock_name, config)
-        return result.get("summary", "无法获取舆论数据")
+        report = result.get("summary", "无法获取舆论数据")
+
+        # ———— 写入缓存 ————
+        try:
+            from dataflows.market_cache import MarketDataCache
+            cache = MarketDataCache.get_instance()
+            cache.set_opinion(symbol, "get_opinion_report", report)
+        except Exception:
+            pass
+
+        return report
     except Exception as e:
         logger.error(f"舆论报告生成失败 [{symbol}]: {e}")
         # Fallback: 直接使用雪球
@@ -216,7 +343,17 @@ def get_opinion_report(symbol: str, stock_name: str = "") -> str:
 
 
 def get_xueqiu_hot_posts_for_symbol(symbol: str, limit: int = 10) -> str:
-    """获取个股相关雪球帖子"""
+    """获取个股相关雪球帖子（按个股缓存，同交易日不重复拉取）"""
+    # ———— 缓存优先 ————
+    try:
+        from dataflows.market_cache import MarketDataCache
+        cache = MarketDataCache.get_instance()
+        cached = cache.get_opinion(symbol, "get_xueqiu_hot_posts")
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+
     try:
         from opinion.xueqiu_monitor import build_opinion_summary
         xq_sym = _to_xq(symbol)
@@ -229,7 +366,17 @@ def get_xueqiu_hot_posts_for_symbol(symbol: str, limit: int = 10) -> str:
                 "text": (p.get("text", "") or "")[:150],
                 "likes": p.get("likes", 0),
             })
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        output = to_markdown(result, title=f"雪球帖子 — {symbol}")
+
+        # ———— 写入缓存 ————
+        try:
+            from dataflows.market_cache import MarketDataCache
+            cache = MarketDataCache.get_instance()
+            cache.set_opinion(symbol, "get_xueqiu_hot_posts", output)
+        except Exception:
+            pass
+
+        return output
     except Exception as e:
         return f"雪球帖子获取失败: {e}"
 

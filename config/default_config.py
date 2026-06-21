@@ -11,18 +11,26 @@ import os
 import copy
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 # ============================================================
-# 项目路径
+# 项目路径（所有缓存/结果/记忆均存放在项目目录 data/ 下）
 # ============================================================
 PROJECT_DIR = Path(__file__).parent.parent.resolve()
-HOME_DIR = Path.home()
-CACHE_DIR = HOME_DIR / ".astock_agent"
-RESULTS_DIR = PROJECT_DIR / "results"         # 项目目录（供用户查看）
-MEMORY_LOG_PATH = HOME_DIR / ".astock_agent" / "memory" / "trading_memory.md"
-CHECKPOINT_DIR = HOME_DIR / ".astock_agent" / "checkpoints"
-EXPORT_DIR = PROJECT_DIR / "results"           # 分析完成后同步到此
+DATA_DIR = PROJECT_DIR / "data"
+RESULTS_DIR = DATA_DIR / "results"
+MEMORY_LOG_PATH = DATA_DIR / "memory" / "trading_memory.md"
+CHECKPOINT_DIR = DATA_DIR / "checkpoints"
+OPINION_CACHE_DIR = DATA_DIR / "opinion_cache"
+MARKET_CACHE_DIR = DATA_DIR / "market_cache"
+DATA_CACHE_DIR = DATA_DIR / "data_cache"
+BATCH_RESULTS_DIR = DATA_DIR / "batch_results"
 
-for d in [CACHE_DIR, RESULTS_DIR, MEMORY_LOG_PATH.parent, CHECKPOINT_DIR, EXPORT_DIR]:
+for d in [
+    RESULTS_DIR, MEMORY_LOG_PATH.parent, CHECKPOINT_DIR,
+    OPINION_CACHE_DIR, MARKET_CACHE_DIR, DATA_CACHE_DIR, BATCH_RESULTS_DIR,
+]:
     try:
         d.mkdir(parents=True, exist_ok=True)
     except (PermissionError, OSError):
@@ -76,10 +84,11 @@ DEFAULT_CONFIG = {
 
     # --- 路径 ---
     "project_dir": str(PROJECT_DIR),
-    "results_dir": str(HOME_DIR / ".astock_agent" / "results"),
-    "export_dir": str(PROJECT_DIR / "results"),
-    "data_cache_dir": str(CACHE_DIR / "data_cache"),
+    "results_dir": str(RESULTS_DIR),
+    "export_dir": str(RESULTS_DIR),
+    "data_cache_dir": str(DATA_CACHE_DIR),
     "checkpoint_dir": str(CHECKPOINT_DIR),
+    "opinion_cache_dir": str(OPINION_CACHE_DIR),
 
     # --- 调试 ---
     "debug": False,

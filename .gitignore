@@ -8,10 +8,17 @@ __pycache__/
 .env.local
 run.bat
 
-# 分析结果 (数据量大，本地生成即可)
-results/
+# 分析结果 & 缓存 (体积大，本地生成)
+data/results/
+data/batch_results/
+data/market_cache/
+data/opinion_cache/
+data/stock_cache/
+data/agent_cache/
+data/memory/
+data/*_daily_report.md
 
-# 临时/缓存
+# 临时/日志
 *.log
 .astock_agent/
 

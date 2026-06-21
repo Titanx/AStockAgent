@@ -1,15 +1,14 @@
 """
 批量分析脚本 — AStockAgent Batch Runner
 
-对光伏/风电/AI/储能/视觉 ~110支股票依次分析
+对光伏/风电/AI/储能/视觉 25支股票依次分析
 每支股票:
-  - results/{code}/{timestamp}_analysis.json  (完整JSON结果)
-  - results/{code}/{timestamp}_thinking.md   (思考过程+报告)
+  - results/{code}/{timestamp}_analysis.md  (完整Markdown结果)
+  - results/{code}/{timestamp}_thinking.md  (思考过程+报告)
 """
 
 import os
 import sys
-import json
 import time
 import traceback
 import signal
@@ -24,6 +23,7 @@ from config.default_config import get_config
 from graph.trading_graph import AStockTradingGraph
 from dataflows.akshare_adapter import get_latest_trade_date
 from dataflows.market_cache import MarketDataCache
+from agents.utils.md_utils import to_markdown
 
 # ============================================================
 # 股票列表: ~110支 (光伏25 + 风电20 + AI 25 + 储能20 + 视觉20)
@@ -80,7 +80,7 @@ STOCKS = unique_stocks
 TRADE_DATE = get_latest_trade_date()
 print(f"📅 最近交易日: {TRADE_DATE}")
 BATCH_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
-RESULTS_BASE = Path.home() / ".astock_agent" / "batch_results"
+RESULTS_BASE = project_dir / "data" / "batch_results"
 
 # ============================================================
 # 主逻辑
@@ -123,7 +123,7 @@ def save_thinking_md(output_dir: Path, symbol: str, name: str, result: dict, ts:
             lines.append(f"")
             # 截断过长的内容，但保留足够信息
             if len(content) > 8000:
-                content = content[:8000] + "\n\n...(内容过长，已截断，完整内容见JSON)"
+                content = content[:8000] + "\n\n...(内容过长，已截断，完整内容见MD文件)"
             lines.append(content)
             lines.append(f"")
             lines.append(f"---")
@@ -135,7 +135,7 @@ def save_thinking_md(output_dir: Path, symbol: str, name: str, result: dict, ts:
     decision = result.get("decision", "")
     if decision:
         if len(decision) > 5000:
-            decision = decision[:5000] + "\n\n...(完整决策见JSON)"
+            decision = decision[:5000] + "\n\n...(完整决策见MD文件)"
         lines.append(decision)
     lines.append(f"")
 
@@ -158,13 +158,13 @@ def analyze_one(symbol: str, name: str, sector: str,
         result["sector"] = sector
         result["batch_id"] = BATCH_ID
 
-        # 保存 JSON
-        json_path = output_dir / f"{ts}_analysis.json"
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
+        # 保存 Markdown
+        md_path = output_dir / f"{ts}_analysis.md"
+        md = to_markdown(result, title=f"分析结果 — {name} ({symbol})")
+        md_path.write_text(md, encoding="utf-8")
 
         # 保存 Thinking MD
-        md_path = save_thinking_md(output_dir, symbol, name, result, ts)
+        thinking_md_path = save_thinking_md(output_dir, symbol, name, result, ts)
 
         return {
             "symbol": symbol,
@@ -173,8 +173,8 @@ def analyze_one(symbol: str, name: str, sector: str,
             "rating": result.get("rating", "?"),
             "action": result.get("action", "?"),
             "confidence": result.get("confidence", 0),
-            "json_path": str(json_path),
             "md_path": str(md_path),
+            "thinking_md_path": str(thinking_md_path),
             "status": "success",
             "error": None,
         }
@@ -193,9 +193,9 @@ def analyze_one(symbol: str, name: str, sector: str,
             "traceback": trace,
             "batch_id": BATCH_ID,
         }
-        error_path = output_dir / f"{ts}_error.json"
-        with open(error_path, "w", encoding="utf-8") as f:
-            json.dump(error_result, f, ensure_ascii=False, indent=2)
+        error_path = output_dir / f"{ts}_error.md"
+        md = to_markdown(error_result, title=f"错误 — {name} ({symbol})")
+        error_path.write_text(md, encoding="utf-8")
 
         return {
             "symbol": symbol,
@@ -204,8 +204,7 @@ def analyze_one(symbol: str, name: str, sector: str,
             "rating": "?",
             "action": "?",
             "confidence": 0,
-            "json_path": str(error_path),
-            "md_path": "",
+            "md_path": str(error_path),
             "status": "error",
             "error": error_msg,
         }
@@ -222,7 +221,7 @@ def main():
     skipped = []
     for code, name, sector in STOCKS:
         dir = RESULTS_BASE / code
-        if dir.exists() and any(f.endswith('_analysis.json') for f in os.listdir(dir) if not f.startswith('_')):
+        if dir.exists() and any(f.endswith('_analysis.md') for f in os.listdir(dir) if not f.startswith('_')):
             skipped.append(f"{name}({code})")
         else:
             todo.append((code, name, sector))
@@ -249,8 +248,9 @@ def main():
     # ———— 预加载市场公共数据到缓存 ————
     cache = MarketDataCache.get_instance()
     cache.set_trade_date(TRADE_DATE)
-    print("📦 预加载市场公共数据...")
-    preload_status = cache.preload()
+    all_symbols = [s[0] for s in STOCKS]
+    print("📦 预加载市场公共数据 + 个股缓存...")
+    preload_status = cache.preload(symbols=all_symbols)
     for method, status in preload_status.items():
         print(f"  {status} {method}")
     print()
@@ -328,11 +328,10 @@ def main():
         "total_time_minutes": round(total_time, 1),
         "results": results,
     }
-    summary_path = RESULTS_BASE / f"_BATCH_{BATCH_ID}_summary.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-
-    print(f"\n📁 汇总文件: {summary_path}")
+    summary_path = RESULTS_BASE / f"_BATCH_{BATCH_ID}_summary.md"
+    md = to_markdown(summary, title=f"批量分析汇总 — {BATCH_ID}")
+    summary_path.write_text(md, encoding="utf-8")
+    print(f"\n📊 汇总已保存: {summary_path}")
     print(f"📁 各股结果: {RESULTS_BASE}/{{代码}}/")
 
     return results
