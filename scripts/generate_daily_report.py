@@ -84,6 +84,8 @@ lines = []
 lines.append(f"# 📊 AStockAgent 批量分析报告 — {trade_date}")
 lines.append(f"**生成时间**: {today} | **股票数**: {len(results)} 支 | **覆盖板块**: 光伏/风电/AI/储能/视觉")
 lines.append("")
+lines.append("> ⚠️ 本报告由 AI 系统自动生成，仅供学习研究，不构成投资建议。")
+lines.append("")
 
 # === 一、总览 ===
 lines.append("## 一、总览")
@@ -189,6 +191,10 @@ lines.append("")
 lines.append("**辩论机制**: 多空研究员 3 轮辩论 → 风险管理 3 轮辩论 → 投资经理终决")
 lines.append("")
 lines.append(f"**数据日期**: {trade_date} | **LLM**: DeepSeek-V3")
+lines.append("")
+lines.append("---")
+lines.append("")
+lines.append("> ⚠️ **免责声明**: 本报告由 AI 多智能体系统自动生成，仅供学习研究使用，不构成任何投资建议。股市有风险，投资需谨慎。")
 lines.append("")
 
 # 写入

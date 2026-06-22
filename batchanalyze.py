@@ -330,6 +330,7 @@ def main():
     }
     summary_path = RESULTS_BASE / f"_BATCH_{BATCH_ID}_summary.md"
     md = to_markdown(summary, title=f"批量分析汇总 — {BATCH_ID}")
+    md += "\n\n---\n\n> ⚠️ **免责声明**: 本分析由 AI 系统自动生成，仅供学习研究使用，不构成任何投资建议。股市有风险，投资需谨慎。\n"
     summary_path.write_text(md, encoding="utf-8")
     print(f"\n📊 汇总已保存: {summary_path}")
     print(f"📁 各股结果: {RESULTS_BASE}/{{代码}}/")

@@ -157,6 +157,8 @@ def _render_trace_md(symbol: str, stock_name: str, trade_date: str,
     lines.append(f"| 辩论轮数 | {result.get('debate_rounds',0)} |")
     lines.append(f"| 风险轮数 | {result.get('risk_rounds',0)} |")
     lines.append("")
+    lines.append("> ⚠️ **免责声明**: 本分析由 AI 系统自动生成，仅供学习研究使用，不构成任何投资建议。股市有风险，投资需谨慎。")
+    lines.append("")
 
     return lines
 
@@ -579,6 +581,7 @@ class AStockTradingGraph:
             md_path = home_dir / f"{filename}.md"
 
             md = to_markdown(result, title=f"分析结果 — {result.get('stock_name','')} ({result['symbol']})")
+            md += "\n\n---\n\n> ⚠️ **免责声明**: 本分析由 AI 系统自动生成，仅供学习研究使用，不构成任何投资建议。股市有风险，投资需谨慎。\n"
             md_path.write_text(md, encoding="utf-8")
 
             json_path = home_dir / f"{filename}.cache.json"
