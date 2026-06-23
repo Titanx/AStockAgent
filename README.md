@@ -108,10 +108,11 @@ Day 2 (第三日)  →  收盘前强制平仓，无论盈亏
 
 ## 参考项目
 
-本项目架构设计参考了以下两个优秀项目：
+本项目架构设计参考了以下三个优秀项目：
 
 - **[TradingAgents](https://github.com/TauricResearch/TradingAgents)** — 多智能体交易框架，借鉴了其 Analyst→Researcher→Trader→Risk Manager 的多 Agent 协作范式，以及多空辩论（Bull/Bear Debate）和风险讨论（Aggressive/Conservative/Neutral）的设计思路。
 - **[Agent-Reach](https://github.com/your-repo/Agent-Reach)** — 多平台信息获取框架，借鉴了其多渠道舆论监控和数据聚合的设计模式。
+- **[SkillOpt](https://github.com/microsoft/SkillOpt)** — 微软开源的 Agent Skill 优化框架（论文 arXiv:2605.23904）。将深度学习训练方法论（前向/反向传播、有界编辑、验证门控、慢速更新）移植到文本空间，把 Agent Prompt 当作可训练参数来优化。本项目 `skills/` 目录的 Markdown 解耦架构直接对齐 SkillOpt 的 skill-as-trainable-state 范式。
 
 ## 架构概览
 
