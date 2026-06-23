@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
     "deep_think_llm": "deepseek-chat",    # 深度推理模型（研究经理/投资经理）
     "quick_think_llm": "deepseek-chat",   # 快速推理模型（分析师/研究员/交易员）
     "backend_url": None,                  # 自定义 API 端点（如国内中转）
-    "temperature": 0.3,
+    "temperature": 0.1,                   # 低温度 → 输出高度确定性 (一日游策略避免评分漂移)
 
     # --- A股 数据配置 ---
     "data_vendor": "akshare",            # akshare / tushare
