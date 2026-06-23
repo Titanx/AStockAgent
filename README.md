@@ -34,77 +34,10 @@ Day 2 (第三日)  →  收盘前强制平仓，无论盈亏
 
 ## 策略设计理念：为什么是一日游
 
-> 核心：**一日游不是为了让单次收益最大化，而是为了让反馈样本积累速度最大化。**
-
-### 问题：长线策略的反馈鸿沟
-
-长线分析 → Buy → 持有 2-4 周 → 才知道对错。月仅 25 条反馈，Agent prompt 好不好要等一个月才看得出来。
-
-### 解决：一口游压缩反馈周期
-
-```
-一日游: 25支/天 → 125条反馈/周 → 500条/月
-长线:   25支/月 → 25条/月
-
-一个月的一日游 ≈ 一年半的长线反馈量
-```
-
-| 指标 | 长线 | 一日游 |
-|------|:--:|:--:|
-| 单次反馈周期 | 2-4 周 | **2 天** |
-| 月可迭代轮次 | 1-2 次 | **15-20 次** |
-| 月样本量 | ~25 条 | **~500 条** |
-| A/B 测试可行性 | 差 | **好** |
-
-## Agent OPT：自动化优化闭环
-
-`Agent OPT` 基于回测数据自动优化 Agent 的 prompt 和参数，让多 Agent 系统在命中率/踏空率/Buy信号率三个指标上达到最优平衡。
-
-```
-┌─────────────────────────────────────┐
-│           Agent OPT 循环             │
-│                                     │
-│  1. 跑一批分析 (25支)                │
-│          ↓                          │
-│  2. 等待 Day1 收盘 → 回测验证        │
-│          ↓                          │
-│  3. 汇总指标：命中率/踏空率/Buy信号率 │
-│          ↓                          │
-│  4. 自动调整参数:                    │
-│     ├─ 误判 > 0：收紧风险            │
-│     ├─ 踏空 > 30%：放宽信号          │
-│     └─ Buy信号率 < 5%：调高Bull权重  │
-│          ↓                          │
-│  5. 回到步骤 1                      │
-└─────────────────────────────────────┘
-```
-
-### 回测指标
-
-| 指标 | 计算 | 红线 |
-|------|------|:--:|
-| Buy 命中率 | HIT/(HIT+MISS) | <50% ❌ |
-| 踏空率 | STEP/全部 | >40% ❌ |
-| 误判率 | MISS/全部 | >0% ❌ |
-| Buy 信号率 | Buy数/全部 | <5% 🟡太保守 |
-
-### 当前基线（5日回测，25笔）
-
-| 指标 | 数值 |
-|------|:--:|
-| Buy 命中率 | 3/3 = **100%** |
-| 总准确率 | 64% |
-| 踏空率 | 36% 🔴 |
-| 误判率 | 0% |
-
-### OPT 路线图
-
-| 阶段 | 内容 | 状态 |
-|------|------|:--:|
-| P0 | 一日游 + 回测体系 | ✅ |
-| P1 | 样本积累至 100+ | 🔄 45/100 |
-| P2 | opt_runner 自动调优 | ⬜ |
-| P3 | 配置快照 & 自动化日报 | ⬜ |
+> 一日游不是追求单次收益最大化，而是**追求反馈样本积累速度最大化**。
+> 一天 25 个样本、月 500 个样本（相当长期策略的一年半），每 2 天就能验证一条 prompt 好不好。
+> 基于这个反馈密度，用 [SkillOpt](https://github.com/microsoft/SkillOpt) 框架自动优化 Agent 的 Prompt 文档（`skills/*.skill.md`），
+> 让命中率/踏空率/误判率在闭环迭代中持续收敛。详见 [docs/one_day_swing_strategy.md](docs/one_day_swing_strategy.md)。
 
 ## 参考项目
 
@@ -300,74 +233,27 @@ AStockAgent/
 └── .gitignore
 ```
 
-## 数据缓存体系
+## 数据缓存
 
-系统采用**多层缓存架构**，避免重复拉取 AKShare / 雪球 API，加速分析并降低调用成本。
+多层 MD+JSON 双写缓存，避免重复拉取 API、加速分析。详见 [data/README.md](data/README.md)。
 
-### 缓存层级
-
-```
-data/
-├── market_cache/         # 公共数据缓存 (按日期)
-│   ├── {date}_get_market_sentiment.{md,cache.json}
-│   ├── {date}_get_sector_boards.{md,cache.json}
-│   └── {date}_get_north_flow.{md,cache.json}
-│
-├── stock_cache/          # 个股数据缓存 (按symbol子目录)
-│   └── {symbol}/         # 如 600438/
-│       ├── {date}_get_stock_price_data.{md,cache.json}
-│       ├── {date}_get_stock_realtime_quote.{md,cache.json}
-│       ├── {date}_get_stock_financials.{md,cache.json}
-│       └── {date}_price_daily_{day}.{md,cache.json}  (30天日线)
-│
-├── opinion_cache/        # 舆论数据缓存 (按symbol子目录)
-│   └── {symbol}/         # 如 600438/
-│       ├── {date}_get_opinion_report.{md,cache.json}
-│       └── {date}_get_xueqiu_hot_posts.{md,cache.json}
-│
-├── agent_cache/          # LLM 辩论轨迹 (按symbol子目录)
-│   └── {symbol}/
-│       └── {date}_agent_trace.{md,cache.json}
-│
-├── results/              # 分析结果 (MD + JSON 双写)
-│   └── {symbol}_{date}_analysis.{md,cache.json}
-│
-└── batch_results/        # 批量分析结果 (batchanalyze 输出)
-    └── {symbol}/         # analysis.md + thinking.md
-```
-
-### 缓存策略
-
-| 数据类型 | 缓存方式 | 跨会话恢复 | 历史数据 |
-|----------|----------|:--:|:--:|
-| 市场情绪/板块排行 | 按交易日 `.cache.json` | ✅ preload() | ✅ 30天 |
-| 北向资金 | 按交易日 `.cache.json` | ✅ preload() | ✅ 逐日累积 |
-| 个股行情 (日线) | 按交易日 `.cache.json` | ✅ preload() | ✅ 30天 |
-| 个股实时行情 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
-| 个股财务指标 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
-| 舆论情绪报告 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
-| 雪球热门帖子 | 按交易日 `.cache.json` | ✅ preload() | ❌ 仅当天 |
-| LLM 辩论轨迹 | `.md` + `.cache.json` | ❌ 每次新生成 | ❌ 每次覆盖 |
-
-**`preload()` 流程**: 扫描磁盘缓存→实时拉取缺失→历史回填→舆情恢复→个股恢复→价格历史加载
+| 类型 | 目录 | 缓存策略 |
+|------|------|---------|
+| 公共数据 | `market_cache/` | 按交易日缓存，支持 30 天历史 |
+| 个股数据 | `stock_cache/` | 按 symbol/trade_date 缓存 |
+| 舆论数据 | `opinion_cache/` | 按 symbol/trade_date 缓存 |
+| LLM 轨迹 | `agent_cache/` | 每次分析新生成，用于回溯审查 |
+| 分析结果 | `results/` | 回测脚本直接读取 |
+| 批量输出 | `batch_results/` | batchanalyze 产出 |
 
 ## 功能特点
 
-- **多智能体协作** — 4个分析师 + 多空辩论 + 3方风控讨论，模拟真实投研流程
+- **多智能体协作** — 4 分析师 → 多空辩论 → 交易 → 3 方风控 → 经理终决，模拟投研流程
 - **多源数据融合** — AKShare + 东方财富 + 新浪 + 腾讯 + 同花顺 + 雪球 + 微博，自动回退
-- **智能缓存系统** — 内存→磁盘双层缓存，MD (人类可读) + JSON (程序恢复) 双写，跨会话复用
-- **历史数据回填** — 市场情绪/板块行情/北向资金/个股日线 支持 30 天历史回溯
-- **辩论轨迹留存** — 每次分析完整 LLM 对话流存入 `agent_cache/`，可回溯审查
-- **按股归拢目录** — opinion_cache / stock_cache / agent_cache 按 symbol 子目录组织
-- **Markdown 输出** — 所有数据/结果/报告统一 MD 格式，人类直接可读
-- **舆论监控** — 雪球热门帖子、微博情绪、财经新闻聚合
-- **差异化评级** — Overweight / Hold / Underweight + 置信度
-- **T+2 一日游策略** — Day0盘后分析 → Day1开盘买入 → Day2收盘强制平仓
-- **流动性安全检查** — 自动检测 ST/停牌/跌停/成交额，硬过滤不合格标的
-- **回测验证体系** — 单日/多日回测，命中率/踏空率/误判率/准确率一键汇总
-- **Agent OPT** — 基于回测数据自动迭代优化 prompt 和参数，闭环收敛
-- **非交易日处理** — 自动回退到最近交易日数据
-- **批量分析报告** — 一键生成 25 只股票板块热力图 + 投资逻辑汇总
+- **MD+JSON 双写** — 缓存/结果/辩论轨迹统一 MD+JSON，人类可读 + 程序可解析
+- **一日游策略** — Day0 盘后分析 → Day1 买入 → Day2 强制平仓，差异化评级 + 流动性过滤
+- **回测体系** — 单日/多日回测，命中率/踏空率/误判率一键汇总
+- **SkillOpt 闭环** — `skills/*.skill.md` 解耦 Prompt，回测反馈 → 自动迭代优化
 
 ## 分析流程
 
