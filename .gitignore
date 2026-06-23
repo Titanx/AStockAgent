@@ -22,6 +22,11 @@ data/*_daily_report.md
 *.log
 .astock_agent/
 
+# SkillOpt 运行时产物 (每次 pipeline 生成)
+opt/input/
+opt/output/
+opt/snapshots/
+
 # IDE
 .vscode/
 .idea/
