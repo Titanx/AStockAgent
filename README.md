@@ -1,6 +1,6 @@
-# AStockAgent
+# DayTraderSelfOptAgent
 
-基于数据和舆论监控的 A 股量化交易多智能体系统。**策略模式：一日游超短线**。
+基于数据和舆论监控的 A 股一日游策略多智能体系统，集成 SkillOpt 自我优化闭环。
 
 > ⚠️ **免责声明**: 本项目仅供学习研究使用，所有分析结果均不构成任何投资建议。股市有风险，投资需谨慎。
 
@@ -173,7 +173,7 @@ python scripts/_progress.py
 ## 项目结构
 
 ```
-AStockAgent/
+DayTraderSelfOptAgent/
 ├── skills/                         # SkillOpt 管理的 Agent Prompt (可编辑 Markdown)
 │   ├── bull_researcher.skill.md
 │   ├── bear_researcher.skill.md
