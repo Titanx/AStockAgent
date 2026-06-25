@@ -139,7 +139,12 @@ def apply_edits(edits_path: str = None) -> dict:
         {"applied": [...], "skipped": [...], "backup_dir": "..."}
     """
     if edits_path is None:
-        edits_path = OUTPUT_DIR / "edits.json"
+        # 优先使用 selected > aggregated > raw
+        for candidate in ["edits_selected.json", "edits_aggregated.json", "edits.json"]:
+            p = OUTPUT_DIR / candidate
+            if p.exists():
+                edits_path = str(p)
+                break
 
     edits_path = Path(edits_path)
     if not edits_path.exists():

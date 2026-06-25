@@ -4,6 +4,8 @@ pipeline 步骤:
   1. collector       → 收集回测数据，输出 rollout.json
   1.5 debate_logger  → 归档辩论轨迹到 opt/trajectories/{run_id}/
   2. optimizer       → 分析错误，输出 edits.json
+  2a. aggregate      → 合并去重相似编辑，输出 edits_aggregated.json
+  2b. select         → 多维评分挑选 top-k，输出 edits_selected.json
   3. [review]        → 人工审查编辑提案（可选，默认跳过）
   4. applier         → 应用编辑到 skills/*.skill.md
   5. gate            → (手动) 在验证集重跑后调用 gate.py 比较准确率
@@ -29,6 +31,8 @@ load_dotenv(PROJECT_DIR / ".env", override=True)
 
 from opt.collector import collect, main as collector_main
 from opt.optimizer import run_optimizer
+from opt.aggregate import aggregate
+from opt.select import select as select_edits
 from opt.applier import apply_edits
 from opt.gate import gate
 from opt.debate_logger import save_trajectories, list_versions
@@ -72,6 +76,32 @@ def step_optimize():
     return result
 
 
+def step_aggregate(edit_result):
+    """Step 2a: 合并去重相似编辑。"""
+    edits = edit_result.get("edits", [])
+    if len(edits) <= 1:
+        print("\nStep 2a: Aggregate — only {} edit, skipped".format(len(edits)))
+        return edit_result
+
+    print("\n" + "=" * 60)
+    print("Step 2a: Aggregate — deduplicate similar edits")
+    print("=" * 60)
+    return aggregate(edit_result)
+
+
+def step_select(edit_result):
+    """Step 2b: 多维评分选 top-k。"""
+    edits = edit_result.get("edits", [])
+    if len(edits) <= 3:
+        print("\nStep 2b: Select — only {} edits, skipped".format(len(edits)))
+        return edit_result
+
+    print("\n" + "=" * 60)
+    print("Step 2b: Select — score & pick top-k")
+    print("=" * 60)
+    return select_edits(edit_result, top_k=3)
+
+
 def step_review(edit_result):
     """Show proposed edits and ask for confirmation."""
     edits = edit_result.get("edits", [])
@@ -113,7 +143,8 @@ def step_status():
     print("\nPipeline Status:")
     print("-" * 40)
 
-    for fname in ["rollout.json", "edits.json", "applied.json", "gate_result.json"]:
+    for fname in ["rollout.json", "edits.json", "edits_aggregated.json",
+                   "edits_selected.json", "applied.json", "gate_result.json"]:
         fp = history_path / fname
         if fp.exists():
             data = json.loads(fp.read_text(encoding="utf-8"))
@@ -186,6 +217,12 @@ def main():
         if edit_result is None:
             print("Optimizer failed. Pipeline stopped.")
             return
+
+        # Step 2a: Aggregate
+        edit_result = step_aggregate(edit_result)
+
+        # Step 2b: Select top-k
+        edit_result = step_select(edit_result)
 
         # Update trajectory version with edits
         step_log_trajectories(run_id, edits_data=edit_result)
