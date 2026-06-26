@@ -15,18 +15,9 @@ from dataflows.market_cache import MarketDataCache
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)-5s %(message)s")
 
-STOCKS = [
-    ("sh600438","通威股份","光伏"),("sh601012","隆基绿能","光伏"),("sz300274","阳光电源","光伏"),
-    ("sh688599","天合光能","光伏"),("sz300751","迈为股份","光伏"),
-    ("sz002202","金风科技","风电"),("sh601615","明阳智能","风电"),("sh603606","东方电缆","风电"),
-    ("sz300850","新强联","风电"),("sz001289","龙源电力","风电"),
-    ("sz002230","科大讯飞","AI"),("sh688256","寒武纪","AI"),("sz000977","浪潮信息","AI"),
-    ("sz300308","中际旭创","AI"),("sz300033","同花顺","AI"),
-    ("sz300750","宁德时代","储能"),("sz300014","亿纬锂能","储能"),("sz002074","国轩高科","储能"),
-    ("sz002460","赣锋锂业","储能"),("sh601727","上海电气","储能"),
-    ("sz002415","海康威视","视觉"),("sz002236","大华股份","视觉"),("sz002920","德赛西威","视觉"),
-    ("sz300496","中科创达","视觉"),("sh603501","韦尔股份","视觉"),
-]
+from scripts.stock_universe import stocks_for_collector
+
+STOCKS = stocks_for_collector()
 
 if len(sys.argv) < 2:
     print("用法: python run_batch_date.py 2026-06-22")

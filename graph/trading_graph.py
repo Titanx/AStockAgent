@@ -367,6 +367,8 @@ class AStockTradingGraph:
             "investment_debate_state": {"count": 0},
             "risk_debate_state": {"count": 0},
             "final_decision": "",
+            "market_overview": self.config.get("market_overview", ""),
+            "sector_context": self.config.get("sector_context", ""),
         }
 
         # 运行图

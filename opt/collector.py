@@ -13,42 +13,20 @@
 import json
 import urllib.request
 import time
+import sys
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Optional
 
 PROJECT_DIR = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_DIR))
 RESULTS_DIR = PROJECT_DIR / "data" / "results"
 OUTPUT_DIR = PROJECT_DIR / "opt" / "input"
 
-STOCKS = [
-    ("sh600438", "Tongwei", "Solar"),
-    ("sh601012", "LONGi", "Solar"),
-    ("sz300274", "Sungrow", "Solar"),
-    ("sh688599", "Trina", "Solar"),
-    ("sz300751", "Maxwell", "Solar"),
-    ("sz002202", "Goldwind", "Wind"),
-    ("sh601615", "MingYang", "Wind"),
-    ("sh603606", "OrientCable", "Wind"),
-    ("sz300850", "Xinqianglian", "Wind"),
-    ("sz001289", "Longyuan", "Wind"),
-    ("sz002230", "iFlytek", "AI"),
-    ("sh688256", "Cambricon", "AI"),
-    ("sz000977", "Inspur", "AI"),
-    ("sz300308", "Zhongji", "AI"),
-    ("sz300033", "Hithink", "AI"),
-    ("sz300750", "CATL", "Energy"),
-    ("sz300014", "EVE", "Energy"),
-    ("sz002074", "Guoxuan", "Energy"),
-    ("sz002460", "Ganfeng", "Energy"),
-    ("sh601727", "SEC", "Energy"),
-    ("sz002415", "Hikvision", "Vision"),
-    ("sz002236", "Dahua", "Vision"),
-    ("sz002920", "DesaySV", "Vision"),
-    ("sz300496", "ThunderSoft", "Vision"),
-    ("sh603501", "WillSemi", "Vision"),
-]
+from scripts.stock_universe import stocks_for_collector
+
+STOCKS = stocks_for_collector()
 
 
 def load_prediction(code, trade_date):

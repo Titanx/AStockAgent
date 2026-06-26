@@ -117,6 +117,8 @@ class GraphSetup:
             investment_debate_state: Optional[Dict]
             risk_debate_state: Optional[Dict]
             final_decision: Optional[str]
+            market_overview: Optional[str]     # EvoSkill v0.2: 大盘/板块共享数据
+            sector_context: Optional[str]      # EvoSkill v0.2: 板块特定上下文
 
         workflow = StateGraph(AgentState)
 
@@ -414,6 +416,10 @@ class GraphSetup:
         parts = [f"## 分析标的: {state.get('stock_name', '')} ({state['symbol']})",
                  f"分析日期: {state['trade_date']}\n"]
 
+        overview = state.get("market_overview", "")
+        if overview:
+            parts.append(f"### 大盘背景\n{overview[:800]}\n")
+
         reports = {
             "基本面分析": state.get("fundamental_report", ""),
             "技术面分析": state.get("technical_report", ""),
@@ -508,6 +514,14 @@ class GraphSetup:
             f"### 基本信息\n- 股票: {state.get('stock_name', '')} ({state['symbol']})",
             f"- 日期: {state['trade_date']}\n",
         ]
+
+        overview = state.get("market_overview", "")
+        if overview:
+            parts.append(f"### 大盘背景\n{overview[:600]}\n")
+
+        sector_ctx = state.get("sector_context", "")
+        if sector_ctx:
+            parts.append(f"### 板块背景\n{sector_ctx[:400]}\n")
 
         # 所有分析报告
         for rpt_name, rpt_key in [
