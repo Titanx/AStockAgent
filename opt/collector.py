@@ -30,18 +30,25 @@ STOCKS = stocks_for_collector()
 
 
 def load_prediction(code, trade_date):
-    f = RESULTS_DIR / "{}_{}_analysis.cache.json".format(code, trade_date)
-    if f.exists():
-        try:
-            d = json.loads(f.read_text(encoding="utf-8"))
-            return {
-                "symbol": d.get("symbol", code),
-                "rating": d.get("rating", "?"),
-                "confidence": d.get("confidence", 0),
-                "summary": (d.get("summary") or d.get("investment_logic") or "")[:300],
-            }
-        except Exception:
-            pass
+    candidates = [
+        RESULTS_DIR / "{}_{}_analysis.cache.json".format(code, trade_date),
+    ]
+    candidates += sorted(
+        RESULTS_DIR.glob("{}_{}_v*_analysis.cache.json".format(code, trade_date)),
+        reverse=True,
+    )
+    for f in candidates:
+        if f.exists():
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                return {
+                    "symbol": d.get("symbol", code),
+                    "rating": d.get("rating", "?"),
+                    "confidence": d.get("confidence", 0),
+                    "summary": (d.get("summary") or d.get("investment_logic") or "")[:300],
+                }
+            except Exception:
+                pass
     return None
 
 
@@ -183,16 +190,17 @@ def collect(date_list: List[str]) -> dict:
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 自动发现 results/ 中的所有日期
+    # 自动发现 results/ 中的所有日期 (支持版本化文件名)
     all_dates = set()
-    for f in RESULTS_DIR.glob("*_analysis.cache.json"):
-        try:
-            d = json.loads(f.read_text(encoding="utf-8"))
-            td = d.get("trade_date", "")
-            if td:
-                all_dates.add(td)
-        except Exception:
-            pass
+    for pattern in ["*_analysis.cache.json", "*_v*_analysis.cache.json"]:
+        for f in RESULTS_DIR.glob(pattern):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                td = d.get("trade_date", "")
+                if td:
+                    all_dates.add(td)
+            except Exception:
+                pass
 
     sorted_dates = sorted(all_dates)
     if len(sorted_dates) < 1:

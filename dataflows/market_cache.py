@@ -61,6 +61,7 @@ PUBLIC_DATA_METHODS = frozenset({
     "get_north_flow",          # 北向资金流向（沪股通净买额）
     "get_sector_boards",       # 行业板块涨跌排行
     "get_concept_boards",      # 概念板块涨跌排行
+    "get_sector_fund_flow",    # 板块资金流排名 (EvoSkill v0.3)
 })
 
 # 支持多日历史缓存的方法
@@ -85,6 +86,7 @@ METHOD_TITLES = {
     "get_north_flow": "北向资金流向",
     "get_sector_boards": "行业板块排行",
     "get_concept_boards": "概念板块排行",
+    "get_sector_fund_flow": "板块资金流排名",
     "get_opinion_report": "个股舆论情绪报告",
     "get_xueqiu_hot_posts": "雪球热门帖子",
     "get_stock_price_data": "个股行情数据",
@@ -683,6 +685,7 @@ class MarketDataCache:
                 get_north_flow,
                 get_sector_boards,
                 get_concept_boards,
+                get_sector_fund_flow,
             )
             if method == "get_market_sentiment":
                 return get_market_sentiment()
@@ -692,6 +695,8 @@ class MarketDataCache:
                 return get_sector_boards()
             elif method == "get_concept_boards":
                 return get_concept_boards()
+            elif method == "get_sector_fund_flow":
+                return get_sector_fund_flow()
         except Exception as e:
             logger.error(f"实时拉取 {method} 失败: {e}")
             return None

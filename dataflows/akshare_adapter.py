@@ -15,15 +15,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+import time
+import random
+
+_SAFE_RETRIES = 3
+_SAFE_BASE_DELAY = 1.0
+
 def _safe_akshare_call(func):
-    """安全调用包装器：捕获 AKShare 的错误并返回友好消息"""
+    """安全调用包装器：捕获 AKShare 错误，自动重试+指数退避"""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            logger.error(f"AKShare调用失败 [{func.__name__}]: {e}")
-            return None
+        last_error = None
+        for attempt in range(1, _SAFE_RETRIES + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                if attempt < _SAFE_RETRIES:
+                    delay = _SAFE_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0.1, 0.5)
+                    logger.warning(f"AKShare [{func.__name__}] 第{attempt}次失败，{delay:.1f}s后重试: {e}")
+                    time.sleep(delay)
+                else:
+                    logger.error(f"AKShare [{func.__name__}] {_SAFE_RETRIES}次全部失败: {e}")
+        return None
     return wrapper
 
 
@@ -151,87 +165,152 @@ def get_stock_realtime(symbol: str) -> Optional[Dict[str, Any]]:
     Returns:
         dict with: name, price, change_pct, volume, high, low, open, pre_close
     """
-    import akshare as ak
-
-    # 1. 尝试东方财富源
     try:
-        df = ak.stock_zh_a_spot_em()
-        if df is not None and not df.empty:
-            row = df[df["代码"] == symbol]
-            if not row.empty:
-                row = row.iloc[0]
+        import akshare as ak
+    except ImportError:
+        ak = None
+
+    if ak is not None:
+        # 1. 尝试东方财富源
+        try:
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                row = df[df["代码"] == symbol]
+                if not row.empty:
+                    row = row.iloc[0]
+                    return {
+                        "symbol": symbol,
+                        "name": row.get("名称", ""),
+                        "price": float(row.get("最新价", 0)),
+                        "change_pct": float(row.get("涨跌幅", 0)),
+                        "change": float(row.get("涨跌额", 0)),
+                        "volume": int(row.get("成交量", 0)),
+                        "amount": float(row.get("成交额", 0)),
+                        "high": float(row.get("最高", 0)),
+                        "low": float(row.get("最低", 0)),
+                        "open": float(row.get("今开", 0)),
+                        "pre_close": float(row.get("昨收", 0)),
+                        "turnover_rate": float(row.get("换手率", 0)) if "换手率" in row else None,
+                        "pe": float(row.get("市盈率-动态", 0)) if "市盈率-动态" in row else None,
+                        "total_mv": float(row.get("总市值", 0)) if "总市值" in row else None,
+                        "circ_mv": float(row.get("流通市值", 0)) if "流通市值" in row else None,
+                    }
+        except Exception:
+            pass
+
+        # 2. 尝试腾讯源实时行情
+        try:
+            prefix = "sh" if symbol.startswith(("6", "9")) else "sz"
+            df = ak.stock_zh_a_spot()
+            if df is not None and not df.empty:
+                row = df[df["代码"] == symbol]
+                if not row.empty:
+                    row = row.iloc[0]
+                    return {
+                        "symbol": symbol,
+                        "name": str(row.get("名称", "")),
+                        "price": float(row.get("最新价", 0) or 0),
+                        "change_pct": float(row.get("涨跌幅", 0) or 0),
+                        "change": float(row.get("涨跌额", 0) or 0),
+                        "volume": int(float(row.get("成交量", 0) or 0)),
+                        "amount": float(row.get("成交额", 0) or 0),
+                        "high": float(row.get("最高", 0) or 0),
+                        "low": float(row.get("最低", 0) or 0),
+                        "open": float(row.get("今开", 0) or 0),
+                        "pre_close": float(row.get("昨收", 0) or 0),
+                    }
+        except Exception:
+            pass
+
+        # 3. 从个股日K线取最近一天数据作为替代
+        try:
+            prefix = "sh" if symbol.startswith(("6", "9")) else "sz"
+            df = ak.stock_zh_a_daily(
+                symbol=f"{prefix}{symbol}",
+                start_date=(datetime.now() - timedelta(days=7)).strftime("%Y%m%d"),
+                end_date=datetime.now().strftime("%Y%m%d"),
+                adjust="qfq"
+            )
+            if df is not None and not df.empty and "date" in df.columns:
+                last = df.iloc[-1]
                 return {
                     "symbol": symbol,
-                    "name": row.get("名称", ""),
-                    "price": float(row.get("最新价", 0)),
-                    "change_pct": float(row.get("涨跌幅", 0)),
-                    "change": float(row.get("涨跌额", 0)),
-                    "volume": int(row.get("成交量", 0)),
-                    "amount": float(row.get("成交额", 0)),
-                    "high": float(row.get("最高", 0)),
-                    "low": float(row.get("最低", 0)),
-                    "open": float(row.get("今开", 0)),
-                    "pre_close": float(row.get("昨收", 0)),
-                    "turnover_rate": float(row.get("换手率", 0)) if "换手率" in row else None,
-                    "pe": float(row.get("市盈率-动态", 0)) if "市盈率-动态" in row else None,
-                    "total_mv": float(row.get("总市值", 0)) if "总市值" in row else None,
-                    "circ_mv": float(row.get("流通市值", 0)) if "流通市值" in row else None,
+                    "name": "",
+                    "price": float(last.get("close", 0)),
+                    "change_pct": float(last.get("pct_change", 0) or 0),
+                    "change": float(last.get("change", 0) or 0),
+                    "volume": int(float(last.get("volume", 0) or 0)),
+                    "amount": float(last.get("amount", 0) or 0),
+                    "high": float(last.get("high", 0) or 0),
+                    "low": float(last.get("low", 0) or 0),
+                    "open": float(last.get("open", 0) or 0),
+                    "pre_close": float(last.get("close", 0)) * (1 - float(last.get("pct_change", 0) or 0) / 100) if float(last.get("pct_change", 0) or 0) else float(last.get("close", 0)),
                 }
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-    # 2. 尝试腾讯源实时行情
+    # 4. 腾讯HTTP直连兜底（不封IP，AKShare全挂时最后防线）
     try:
-        prefix = "sh" if symbol.startswith(("6", "9")) else "sz"
-        df = ak.stock_zh_a_spot()
-        if df is not None and not df.empty:
-            row = df[df["代码"] == symbol]
-            if not row.empty:
-                row = row.iloc[0]
-                return {
-                    "symbol": symbol,
-                    "name": str(row.get("名称", "")),
-                    "price": float(row.get("最新价", 0) or 0),
-                    "change_pct": float(row.get("涨跌幅", 0) or 0),
-                    "change": float(row.get("涨跌额", 0) or 0),
-                    "volume": int(float(row.get("成交量", 0) or 0)),
-                    "amount": float(row.get("成交额", 0) or 0),
-                    "high": float(row.get("最高", 0) or 0),
-                    "low": float(row.get("最低", 0) or 0),
-                    "open": float(row.get("今开", 0) or 0),
-                    "pre_close": float(row.get("昨收", 0) or 0),
-                }
-    except Exception:
-        pass
-
-    # 3. 从个股日K线取最近一天数据作为替代
-    try:
-        prefix = "sh" if symbol.startswith(("6", "9")) else "sz"
-        df = ak.stock_zh_a_daily(
-            symbol=f"{prefix}{symbol}",
-            start_date=(datetime.now() - timedelta(days=7)).strftime("%Y%m%d"),
-            end_date=datetime.now().strftime("%Y%m%d"),
-            adjust="qfq"
-        )
-        if df is not None and not df.empty and "date" in df.columns:
-            last = df.iloc[-1]
+        from .direct_http import tencent_realtime
+        rt = tencent_realtime(symbol)
+        if rt is not None:
             return {
                 "symbol": symbol,
-                "name": "",
-                "price": float(last.get("close", 0)),
-                "change_pct": float(last.get("pct_change", 0) or 0),
-                "change": float(last.get("change", 0) or 0),
-                "volume": int(float(last.get("volume", 0) or 0)),
-                "amount": float(last.get("amount", 0) or 0),
-                "high": float(last.get("high", 0) or 0),
-                "low": float(last.get("low", 0) or 0),
-                "open": float(last.get("open", 0) or 0),
-                "pre_close": float(last.get("close", 0)) * (1 - float(last.get("pct_change", 0) or 0) / 100) if float(last.get("pct_change", 0) or 0) else float(last.get("close", 0)),
+                "name": rt.get("name", ""),
+                "price": rt.get("price", 0),
+                "change_pct": rt.get("change_pct", 0),
+                "change": rt.get("change_amt", 0),
+                "volume": 0,
+                "amount": rt.get("amount_wan", 0) * 10000 if rt.get("amount_wan") else 0,
+                "high": rt.get("high", 0),
+                "low": rt.get("low", 0),
+                "open": rt.get("open", 0),
+                "pre_close": rt.get("last_close", 0),
+                "turnover_rate": rt.get("turnover_pct"),
+                "pe": rt.get("pe_ttm"),
+                "total_mv": rt.get("mcap_yi", 0) * 1e8 if rt.get("mcap_yi") else None,
+                "circ_mv": rt.get("float_mcap_yi", 0) * 1e8 if rt.get("float_mcap_yi") else None,
             }
     except Exception:
         pass
 
     return None
+
+
+def get_sector_fund_flow(sector_name: str = None, days: int = 3) -> Optional[Dict]:
+    """获取板块资金流排名 (东方财富 industry funds flow)
+
+    返回: {
+        "today":  [{"name":"光伏设备", "net_inflow":..., "pct_chg":..., "rank":1}, ...],
+        "5_day":  [...],
+        "10_day": [...],
+    }
+    如果 sector_name 非空, 额外附加该板块的个股资金流明细。
+    """
+    import akshare as ak
+    result = {}
+    periods = {"today": "今日", "5_day": "5日", "10_day": "10日"}
+    try:
+        for key, label in periods.items():
+            df = ak.stock_sector_fund_flow_rank(indicator=label, sector_type="行业资金流")
+            if df is not None and len(df) > 0:
+                short = df.head(15)
+                result[key] = []
+                for _, row in short.iterrows():
+                    result[key].append({
+                        "name": str(row.get("名称", "")),
+                        "pct_chg": float(row.get("涨跌幅", 0)) if row.get("涨跌幅") is not None else 0,
+                        "net_inflow": float(row.get("主力净流入-净额", 0)) if row.get("主力净流入-净额") is not None else 0,
+                        "net_ratio": float(row.get("主力净流入-净占比", 0)) if row.get("主力净流入-净占比") is not None else 0,
+                        "rank": int(row.get("序号", 0)) if row.get("序号") is not None else 0,
+                    })
+    except Exception as e:
+        logger.warning(f"板块资金流拉取失败: {e}")
+        return None
+
+    if not result:
+        return None
+    return result
 
 
 # ============================================================

@@ -1,4 +1,4 @@
-"""batch_predict.py — 批量预测统一入口 (并发 + 增量 + 大盘预加载 + 日期参数)
+"""batch_predict.py — 批量预测统一入口 (并发 + 增量 + 数据预加载 + 完整性校验 + 日期参数)
 
 用法:
   python scripts/batch_predict.py                           # 今天 → 下一交易日
@@ -8,11 +8,13 @@
 特性:
   - 并发: 5 workers 并行分析 (I/O 密集, ~5x 提速)
   - 增量: 跳过已有结果的股票 (rating != ERR)
-  - 大盘预加载: 上证/深证/创业板 + 市场情绪 + 北向资金 只拉一次
-  - 共享上下文: market_overview + sector_context 注入每个 agent 的 prompt
+  - 数据预加载: 大盘指数 + 市场情绪 + 北向资金 只拉一次
+  - 个股数据集中获取: 价格/行情/财务/舆论 预先拉取并缓存
+  - 完整性校验: 关键数据缺失时跳过个股，避免浪费 token
+  - 解耦: 数据获取与 agent 辩论完全分离
 """
 
-import sys, time, os, logging, json, argparse
+import sys, time, os, logging, json, argparse, random
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -43,9 +45,16 @@ SECTOR_DESCRIPTIONS = {
     "视觉": "计算机视觉/安防/车载视觉板块，受智慧城市、自动驾驶、AI+应用落地驱动。",
 }
 
+CRITICAL_DATA = ["price"]
 
-def is_done(code, trade_date):
-    cache_file = project_dir / "data" / "results" / f"{code}_{trade_date}_analysis.cache.json"
+PUBLIC_DATA_KEYS = ["market_sentiment", "north_flow", "sector_data", "sector_fund_flow"]
+
+_THROTTLE_INTERVAL = 1.0
+
+
+def is_done(code, trade_date, version=""):
+    ver_suffix = f"_{version}" if version else ""
+    cache_file = project_dir / "data" / "results" / f"{code}_{trade_date}{ver_suffix}_analysis.cache.json"
     if cache_file.exists():
         try:
             d = json.loads(cache_file.read_text("utf-8"))
@@ -65,6 +74,102 @@ def get_next_trade_date(date_str: str) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def _is_empty(data) -> bool:
+    if data is None:
+        return True
+    s = str(data).strip()
+    if not s:
+        return True
+    for fail_marker in ["获取失败", "ERROR", "数据不可用", "板块资金流数据获取失败"]:
+        if fail_marker in s:
+            return True
+    if len(s) < 30:
+        return True
+    return False
+
+
+def _degraded_realtime_from_price(price_md: str) -> str:
+    return (
+        "⚠️ 实时行情获取失败，以下为日线价格数据降级替代：\n\n"
+        + price_md
+        + "\n\n> 注: 实时行情接口不可用，请以日线收盘价为参考。日内波动数据缺失。"
+    )
+
+
+def _prefetch_public_data():
+    from agents.utils.agent_utils import (
+        get_market_sentiment_data,
+        get_north_flow_data,
+        get_sector_data,
+        get_sector_fund_flow_data,
+    )
+    return {
+        "market_sentiment": get_market_sentiment_data(),
+        "north_flow": get_north_flow_data(),
+        "sector_data": get_sector_data(),
+        "sector_fund_flow": get_sector_fund_flow_data(),
+    }
+
+
+def _gather_stock_data(symbol, stock_name):
+    from agents.utils.agent_utils import (
+        get_stock_price_data,
+        get_stock_realtime_quote,
+        get_stock_financials,
+        get_opinion_report,
+    )
+    price = get_stock_price_data(symbol)
+    realtime = get_stock_realtime_quote(symbol)
+    financials = get_stock_financials(symbol)
+    opinion = get_opinion_report(symbol, stock_name)
+
+    if _is_empty(realtime) and not _is_empty(price):
+        realtime = _degraded_realtime_from_price(price)
+
+    return {
+        "price": price,
+        "realtime": realtime,
+        "financials": financials,
+        "opinion": opinion,
+    }
+
+
+def _build_data_context(stock_data, public_data, market_overview):
+    """Build a single comprehensive data context string for all analysts."""
+    parts = []
+
+    if market_overview:
+        parts.append(f"## 大盘环境\n{market_overview}")
+
+    for key, label in [
+        ("price", "## 价格数据"),
+        ("realtime", "## 实时行情"),
+        ("financials", "## 财务数据"),
+        ("opinion", "## 舆论情绪"),
+    ]:
+        if stock_data.get(key) and not _is_empty(stock_data[key]):
+            parts.append(f"{label}\n{stock_data[key]}")
+
+    for key, label in [
+        ("market_sentiment", "## 市场情绪"),
+        ("north_flow", "## 北向资金"),
+        ("sector_data", "## 行业板块"),
+        ("sector_fund_flow", "## 板块资金流"),
+    ]:
+        if public_data.get(key) and not _is_empty(public_data[key]):
+            parts.append(f"{label}\n{public_data[key]}")
+
+    return "\n\n".join(parts)
+
+
+def _validate_data(stock_data, public_data):
+    missing = []
+    for key in CRITICAL_DATA:
+        if _is_empty(stock_data.get(key)):
+            missing.append(key)
+    return missing
+
+
 def main():
     parser = argparse.ArgumentParser(description="批量一日游预测")
     parser.add_argument("date", nargs="?", default="auto", help="分析日期 (YYYY-MM-DD), 默认今天")
@@ -81,14 +186,18 @@ def main():
 
     next_date = get_next_trade_date(trade_date)
 
-    # --- Skip completed ---
+    config = get_config()
+    agent_version = config.get("agent_version", "")
+    config["max_debate_rounds"] = 1
+    config["max_risk_discuss_rounds"] = 1
+
     skipped = []
     todo = []
     for code, name, sector in ALL_STOCKS:
         if args.fresh:
             todo.append((code, name, sector))
         else:
-            done, rating = is_done(code, trade_date)
+            done, rating = is_done(code, trade_date, agent_version)
             if done:
                 skipped.append((code, name, sector, rating))
             else:
@@ -103,33 +212,63 @@ def main():
         print("全部完成！")
         return
 
-    # --- Phase 0: Market Overview (once) ---
-    config = get_config()
-    config["max_debate_rounds"] = 1
-    config["max_risk_discuss_rounds"] = 1
+    shared_overview = ""
+    data_bundles = {}
+    skipped_data = []
 
     if not args.no_overview:
-        print("\n📊 Phase 0: 大盘数据预加载 ...")
+        print("\n📊 Phase 0: 数据集中获取 ...")
+
+        # 1. 大盘概览
         overview = load_overview(trade_date)
         shared_overview = overview_to_prompt(overview)
         idx_parts = []
         for k, v in overview.get('indices', {}).items():
             idx_parts.append(f"{k}({v.get('close', '?')})")
         print(f"   指数: {', '.join(idx_parts)}")
-        print("=" * 60)
 
-        # Preload stock price data (一次拉全部50只)
+        # 2. 公共数据 (市场情绪/北向/板块/资金流)
+        print(f"   公共数据: 市场情绪 + 北向资金 + 板块排行 + 资金流 ...")
         cache = MarketDataCache.get_instance()
         cache.set_trade_date(trade_date)
+        public_data = _prefetch_public_data()
+
+        # 3. 预加载个股价格到内存缓存
         symbols = [c for c, n, s in ALL_STOCKS]
-        print(f"📂 预加载 {len(symbols)} 只股票日线数据 ...")
         cache.preload_stock_data(symbols)
         cache.load_stock_price_history(symbols, days=30)
+
+        # 4. 逐股拉取数据 + 完整性校验 (串行+节流，避免触发东财风控)
+        print(f"   个股数据: 逐股拉取 (间隔≥{_THROTTLE_INTERVAL}s) + 完整性校验 ...")
+        for code, name, sector in todo:
+            stock_data = _gather_stock_data(code, name)
+            missing = _validate_data(stock_data, public_data)
+            if missing:
+                skipped_data.append((code, name, sector, missing))
+                continue
+            data_bundles[code] = _build_data_context(stock_data, public_data, shared_overview)
+            time.sleep(_THROTTLE_INTERVAL + random.uniform(0.1, 0.4))
+
+        # 去重
+        skipped_codes = {x[0] for x in skipped_data}
+        todo = [(c, n, s) for c, n, s in todo if c not in skipped_codes]
+
+        if skipped_data:
+            print(f"\n⚠️  数据不完整，跳过 {len(skipped_data)} 只:")
+            for code, name, sector, missing in skipped_data:
+                print(f"   {code} {name} ({sector}) — 缺失: {', '.join(missing)}")
+
+        print(f"\n✅ 数据就绪: {len(todo)} 只，即将开始辩论")
+        print("=" * 60)
     else:
         shared_overview = ""
 
-    # --- Phase 1: Concurrent Analysis ---
-    print("\n🚀 Phase 1: 并发分析 ...\n")
+    if not todo:
+        print("全部数据不完整，无股票可分析。")
+        return
+
+    # --- Phase 1: Concurrent Debate ---
+    print("\n🚀 Phase 1: 并发辩论 ...\n")
     print_lock = Lock()
     results = []
     start_time = time.time()
@@ -139,6 +278,7 @@ def main():
         cfg = dict(config)
         cfg["market_overview"] = shared_overview
         cfg["sector_context"] = SECTOR_DESCRIPTIONS.get(sector, "")
+        cfg["data_context"] = data_bundles.get(code, "")
         try:
             agent = AStockTradingGraph(config=cfg)
             result = agent.analyze(symbol=code, trade_date=trade_date, stock_name=name)
@@ -169,6 +309,8 @@ def main():
 
     # --- Summary ---
     all_results = [{"code": c, "name": n, "sector": s, "rating": r, "conf": 0, "ok": True} for c,n,s,r in skipped]
+    all_results += [{"code": c, "name": n, "sector": s, "rating": "ERR", "conf": 0, "ok": False}
+                    for c, n, s, _ in skipped_data]
     all_results += results
     by_rating = defaultdict(int)
     for r in all_results:
@@ -176,6 +318,8 @@ def main():
 
     print("\n" + "=" * 60)
     print(f"📊 {trade_date} → {next_date} 预测 ({len(all_results)}只) | 耗时: {total_t:.1f}min | 成功: {ok_count}/{len(todo)}")
+    if skipped_data:
+        print(f"⚠️  数据跳过: {len(skipped_data)} 只")
     for rating in ["Buy", "Overweight", "Hold", "Underweight", "Sell", "ERR"]:
         if by_rating[rating]:
             emoji = {"Buy": "🟢", "Overweight": "🟡", "Hold": "⚪", "Underweight": "🟠", "Sell": "🔴", "ERR": "❌"}[rating]

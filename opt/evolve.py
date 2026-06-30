@@ -43,6 +43,7 @@ TRAJECTORIES_DIR = PROJECT_DIR / "opt" / "trajectories"
 INPUT_DIR = PROJECT_DIR / "opt" / "input"
 SKILLS_DIR = PROJECT_DIR / "skills"
 HISTORY_FILE = OUTPUT_DIR / "pipeline_history.json"
+AGENT_CACHE_DIR = PROJECT_DIR / "data" / "agent_cache"
 
 CONVERGENCE_WINDOW = 3        # 连续 N 轮
 CONVERGENCE_EPSILON = 2.0     # 准确率波动阈值 (%)
@@ -139,15 +140,15 @@ def detect_convergence(history: List[Dict] = None) -> Tuple[bool, str]:
 
 
 def _load_trajectory_samples(max_samples: int = 10) -> List[Dict]:
-    """从最新版本目录加载有代表的辩论轨迹样本 (优先错误样本)。"""
-    versions = sorted(TRAJECTORIES_DIR.glob("*"))
+    """直接从 agent_cache 加载辩论轨迹样本 (优先错误样本)。
 
-    if not versions:
-        return []
-
-    latest = versions[-1]
-    rollout_path = latest / "rollout.json"
+    数据源:
+      1. opt/input/rollout.json → 回测信号 (HIT/MISS/STEP/AVOID)
+      2. data/agent_cache/{symbol}/{date}_agent_trace.cache.json → 辩论轨迹
+    """
+    rollout_path = INPUT_DIR / "rollout.json"
     if not rollout_path.exists():
+        print("  rollout.json not found")
         return []
 
     rollout = json.loads(rollout_path.read_text(encoding="utf-8"))
@@ -156,11 +157,15 @@ def _load_trajectory_samples(max_samples: int = 10) -> List[Dict]:
     good_cases = []
 
     for r in rollout.get("rollout_results", []):
-        code = r["stock"]
-        date = r["date"]
-        verdict = r["verdict"]
-        trace_dir = latest / "traces" / code
-        md_path = trace_dir / "{}_{}_agent_trace.md".format(code, date)
+        code = r.get("stock", "")
+        date = r.get("date", "")
+        verdict = r.get("verdict", "")
+        rating = r.get("rating", "")
+        actual_chg = r.get("actual_chg", 0)
+
+        # Look up trace in agent_cache
+        trace_json = AGENT_CACHE_DIR / code / "{}_agent_trace.cache.json".format(date)
+        trace_md = AGENT_CACHE_DIR / code / "{}_agent_trace.md".format(date)
 
         entry = {
             "code": code,
@@ -168,10 +173,10 @@ def _load_trajectory_samples(max_samples: int = 10) -> List[Dict]:
             "date": date,
             "sector": r.get("sector", ""),
             "verdict": verdict,
-            "rating": r.get("rating", ""),
-            "actual_chg": r.get("actual_chg", 0),
-            "has_trace": md_path.exists(),
-            "trace_path": str(md_path) if md_path.exists() else "",
+            "rating": rating,
+            "actual_chg": actual_chg,
+            "has_trace": trace_json.exists() or trace_md.exists(),
+            "trace_path": str(trace_json) if trace_json.exists() else str(trace_md),
         }
 
         if verdict in ("MISS", "STEP"):
@@ -187,10 +192,19 @@ def _load_trajectory_samples(max_samples: int = 10) -> List[Dict]:
     for s in samples:
         if s["has_trace"]:
             try:
-                trace_content = Path(s["trace_path"]).read_text(encoding="utf-8")
-                s["trace_content"] = trace_content[:4000]
-            except Exception:
-                s["trace_content"] = "(read error)"
+                path = Path(s["trace_path"])
+                if path.suffix == ".json":
+                    d = json.loads(path.read_text(encoding="utf-8"))
+                    msgs = d.get("messages", [])
+                    trace_content = "\n".join(
+                        m.get("content", str(m))[:500]
+                        for m in msgs[-20:]
+                    )
+                else:
+                    trace_content = path.read_text(encoding="utf-8")[:4000]
+                s["trace_content"] = trace_content
+            except Exception as e:
+                s["trace_content"] = "(read error: {})".format(str(e)[:80])
 
     return samples
 

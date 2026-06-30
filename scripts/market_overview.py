@@ -74,7 +74,7 @@ def fetch_market_overview(trade_date: str) -> dict:
 
     # 2. 北向资金
     north = cache.fetch("get_north_flow")
-    if north:
+    if hasattr(north, "__len__") and len(north) > 0:
         overview["north_flow"] = str(north)[:2000]
     else:
         overview["north_flow"] = "(获取失败)"

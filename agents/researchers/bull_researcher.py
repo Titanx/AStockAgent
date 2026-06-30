@@ -56,3 +56,19 @@ def create_reversal_analyst(llm, config: dict) -> dict:
         "tools": [],
         "structured_output": ResearchPlan,
     }
+
+
+def create_sector_rotation_analyst(llm, config: dict) -> dict:
+    """创建板块轮动分析师 — 由 EvoSkill discovery (round 2) 发现。
+
+    综合板块资金流排名、北向资金、板块涨跌排行，
+    识别行业轮动信号，为 Research Manager 提供板块级 Buy/Hold 信号。
+    """
+    from agents.schemas import ResearchPlan
+    from agents.utils.agent_utils import get_sector_fund_flow_data
+    return {
+        "name": "板块轮动分析师",
+        "system_prompt": get_system_prompt("sector_rotation_analyst"),
+        "tools": [get_sector_fund_flow_data],
+        "structured_output": ResearchPlan,
+    }

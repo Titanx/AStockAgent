@@ -119,6 +119,7 @@ class GraphSetup:
             final_decision: Optional[str]
             market_overview: Optional[str]     # EvoSkill v0.2: 大盘/板块共享数据
             sector_context: Optional[str]      # EvoSkill v0.2: 板块特定上下文
+            data_context: Optional[str]        # Phase 0: 预计算的完整数据 (解耦数据获取)
 
         workflow = StateGraph(AgentState)
 
@@ -136,23 +137,19 @@ class GraphSetup:
             # 创建分析师节点函数
             def make_analyst_node(cfg, report_key):
                 def node_fn(state: AgentState) -> dict:
-                    tools = cfg.get("tools", [])
-                    llm_bound = quick
-
-                    if tools:
-                        from langchain_openai import ChatOpenAI
-                        if hasattr(llm_bound, 'bind_tools'):
-                            llm_bound = llm_bound.bind_tools(tools)
-
-                    messages = state["messages"]
-                    # 添加系统提示词和上下文
                     context = (
                         f"## 分析任务\n"
                         f"- 股票代码: {state['symbol']}\n"
                         f"- 股票名称: {state.get('stock_name', '')}\n"
                         f"- 分析日期: {state['trade_date']}\n\n"
-                        f"请调用工具获取数据，然后给出分析报告。\n"
                     )
+
+                    data_context = state.get("data_context", "")
+                    if data_context:
+                        context += f"## 预计算数据 (请仅使用以下数据进行分析)\n{data_context}\n\n"
+                        context += "请基于以上数据输出你的分析报告。不要请求额外数据。\n"
+                    else:
+                        context += "请调用工具获取数据，然后给出分析报告。\n"
 
                     # 注入历史记忆
                     try:
@@ -164,12 +161,29 @@ class GraphSetup:
                     except Exception:
                         pass
 
-                    all_messages = [
-                        SystemMessage(content=cfg["system_prompt"]),
-                        HumanMessage(content=context),
-                    ] + list(messages)
-
-                    response = llm_bound.invoke(all_messages)
+                    # 有预计算数据时无需绑定工具
+                    if data_context:
+                        all_messages = [
+                            SystemMessage(content=cfg["system_prompt"]),
+                            HumanMessage(content=context),
+                        ]
+                        response = quick.invoke(all_messages)
+                    else:
+                        tools = cfg.get("tools", [])
+                        if tools:
+                            from langchain_openai import ChatOpenAI
+                            llm_bound = quick
+                            if hasattr(llm_bound, 'bind_tools'):
+                                llm_bound = llm_bound.bind_tools(tools)
+                            response = llm_bound.invoke([
+                                SystemMessage(content=cfg["system_prompt"]),
+                                HumanMessage(content=context),
+                            ] + list(state["messages"]))
+                        else:
+                            response = quick.invoke([
+                                SystemMessage(content=cfg["system_prompt"]),
+                                HumanMessage(content=context),
+                            ])
                     return {"messages": [response]}
                 return node_fn
 
@@ -212,7 +226,7 @@ class GraphSetup:
         # ========================================================
         from agents.researchers.bull_researcher import (
             create_bull_researcher, create_bear_researcher, create_research_manager,
-            create_reversal_analyst,
+            create_reversal_analyst, create_sector_rotation_analyst,
         )
 
         def make_researcher_node(cfg, role_prefix: str):
@@ -259,6 +273,31 @@ class GraphSetup:
             response.content = content
             return {"messages": [response]}
         workflow.add_node("reversal_analyst", reversal_analyst_node)
+
+        # 板块轮动分析师 — EvoSkill round 2 发现，综合资金流+板块排行评估行业信号
+        def sector_rotation_analyst_node(state: AgentState) -> dict:
+            cfg = create_sector_rotation_analyst(deep, self.config)
+            context = self._build_debate_context(state)
+            sector_ctx = state.get("sector_context", "")
+            if sector_ctx:
+                context = "## 当前板块\n{}\n\n".format(sector_ctx) + context
+
+            data_context = state.get("data_context", "")
+            if data_context:
+                context += "\n\n## 板块资金流与市场数据\n{}".format(data_context)
+                context += "\n\n请基于以上资金流数据分析5个持仓板块的强弱，输出以 'Sector: ' 开头的结构化分析。"
+            else:
+                context += "\n\n请使用 get_sector_fund_flow_data() 获取板块资金流，评估5个持仓板块的强弱，输出以 'Sector: ' 开头的结构化分析。"
+
+            messages = [SystemMessage(content=cfg["system_prompt"]),
+                       HumanMessage(content=context)]
+            response = deep.invoke(messages)
+            content = str(response.content)
+            if not content.startswith("Sector:"):
+                content = "Sector: " + content
+            response.content = content
+            return {"messages": [response]}
+        workflow.add_node("sector_rotation_analyst", sector_rotation_analyst_node)
 
         # 研究主管
         def research_manager_node(state: AgentState) -> dict:
@@ -367,7 +406,7 @@ class GraphSetup:
                 workflow.add_edge(prev_clear, spec.key)
                 prev_clear = spec.clear_node_key
 
-        # Phase 2: 最后一个分析师 → 多空辩论 → 反弹分析师
+        # Phase 2: 最后一个分析师 → 多空辩论 → 反弹分析师 → 板块轮动
         last_clear = plan.specs[-1].clear_node_key
         workflow.add_edge(last_clear, "bull_researcher")
         workflow.add_conditional_edges(
@@ -378,8 +417,9 @@ class GraphSetup:
             "bear_researcher", cl.should_continue_debate,
             {"bull_researcher": "bull_researcher", "reversal_analyst": "reversal_analyst"}
         )
-        # 反弹分析师 → 研究主管
-        workflow.add_edge("reversal_analyst", "research_manager")
+        # 反弹分析师 → 板块轮动分析师 → 研究主管
+        workflow.add_edge("reversal_analyst", "sector_rotation_analyst")
+        workflow.add_edge("sector_rotation_analyst", "research_manager")
 
         # Phase 3: 研究主管 → 交易员
         workflow.add_edge("research_manager", "trader")
@@ -466,7 +506,20 @@ class GraphSetup:
         if not reversal_found:
             parts.append("(反弹分析师未产生评估)\n")
 
-        parts.append("\n请综合以上所有信息，给出最终研究投资计划。\n特别关注反弹分析师是否发现了 Bull/Bear 忽略的超跌反弹机会。")
+        # 板块轮动分析师 (EvoSkill v0.3)
+        parts.append("\n### 板块轮动分析\n")
+        sector_found = False
+        for m in state.get("messages", []):
+            c = str(m.content) if hasattr(m, "content") else ""
+            if c.startswith("Sector:"):
+                parts.append(c + "\n")
+                sector_found = True
+        if not sector_found:
+            parts.append("(板块轮动分析师未产生评估)\n")
+
+        parts.append("\n请综合以上所有信息，给出最终研究投资计划。")
+        parts.append("\n特别关注: 1)反弹分析师是否发现了 Bull/Bear 忽略的超跌反弹机会;")
+        parts.append(" 2)板块轮动分析师是否提供了板块级别的 Buy/Hold 信号。")
         return "\n".join(parts)
 
     def _build_trader_context(self, state: dict) -> str:

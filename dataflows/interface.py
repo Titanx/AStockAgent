@@ -22,7 +22,7 @@ TOOLS_CATEGORIES = {
     "market_data": ["get_stock_daily", "get_stock_realtime", "get_index_daily", "get_market_sentiment"],
     "fundamental_data": ["get_financial_data", "get_financial_indicators", "get_stock_notices"],
     "money_flow": ["get_money_flow", "get_north_flow"],
-    "sector_data": ["get_sector_boards", "get_concept_boards"],
+    "sector_data": ["get_sector_boards", "get_concept_boards", "get_sector_fund_flow"],
     "news_data": ["get_cn_stock_news"],
 }
 
@@ -60,6 +60,7 @@ VENDOR_METHODS: Dict[str, Dict[str, Optional[Callable]]] = {
     "get_market_sentiment":{"akshare": _get_akshare_method("get_market_sentiment")},
     "get_sector_boards":   {"akshare": _get_akshare_method("get_sector_boards")},
     "get_concept_boards":  {"akshare": _get_akshare_method("get_concept_boards")},
+    "get_sector_fund_flow": {"akshare": _get_akshare_method("get_sector_fund_flow")},
     "get_stock_notices":   {"akshare": _get_akshare_method("get_stock_notices")},
     "get_cn_stock_news":   {"akshare": _get_akshare_method("get_cn_stock_news")},
 }

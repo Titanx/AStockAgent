@@ -2,20 +2,19 @@
 
 输入: opt/input/rollout.json (由 collector.py 生成)
 输出: opt/output/edits.json (结构化编辑提案)
-
-Optimizer LLM: 使用与主系统相同的 langchain_openai.ChatOpenAI + DeepSeek V4 Pro，
-  与 trading_graph.py 中 _create_llm("deep") 完全一致的调用方式。
 """
 
 import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 
 PROJECT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_DIR))
+sys.path.insert(0, str(PROJECT_DIR / "libs"))
 
 from dotenv import load_dotenv
 load_dotenv(PROJECT_DIR / ".env", override=True)
@@ -24,11 +23,18 @@ INPUT_DIR = PROJECT_DIR / "opt" / "input"
 OUTPUT_DIR = PROJECT_DIR / "opt" / "output"
 SKILLS_DIR = PROJECT_DIR / "skills"
 
+MAX_RETRIES = 3
+RETRY_DELAY = 5.0
+
 
 def _create_optimizer_llm():
-    """创建 Optimizer LLM 客户端，与主系统 _create_llm("deep") 完全一致。"""
     from config.default_config import get_config
     from langchain_openai import ChatOpenAI
+
+    os.environ.pop("HTTP_PROXY", None)
+    os.environ.pop("HTTPS_PROXY", None)
+    os.environ.pop("http_proxy", None)
+    os.environ.pop("https_proxy", None)
 
     config = get_config()
     provider = config.get("llm_provider", "deepseek")
@@ -43,7 +49,7 @@ def _create_optimizer_llm():
             temperature=temperature,
             api_key=api_key,
             base_url=backend or "https://api.deepseek.com/v1",
-            model_kwargs={"response_format": {"type": "json_object"}},
+            timeout=180,
         )
     elif provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -52,7 +58,7 @@ def _create_optimizer_llm():
             temperature=temperature,
             api_key=api_key,
             base_url=backend,
-            model_kwargs={"response_format": {"type": "json_object"}},
+            timeout=180,
         )
     elif provider == "qwen":
         api_key = os.environ.get("DASHSCOPE_API_KEY")
@@ -61,7 +67,6 @@ def _create_optimizer_llm():
             temperature=temperature,
             api_key=api_key,
             base_url=backend or "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            model_kwargs={"response_format": {"type": "json_object"}},
         )
     elif provider == "ollama":
         return ChatOpenAI(
@@ -69,7 +74,6 @@ def _create_optimizer_llm():
             temperature=temperature,
             base_url=backend or "http://localhost:11434/v1",
             api_key="ollama",
-            model_kwargs={"response_format": {"type": "json_object"}},
         )
     else:
         api_key = os.environ.get("OPENAI_API_KEY")
@@ -78,12 +82,20 @@ def _create_optimizer_llm():
             temperature=temperature,
             api_key=api_key,
             base_url=backend,
-            model_kwargs={"response_format": {"type": "json_object"}},
         )
 
 
 def _extract_json(text: str) -> dict:
-    """从 LLM 响应中提取 JSON，支持 markdown 代码块包裹。"""
+    """从 LLM 响应中提取 JSON。
+
+    支持多种格式:
+      - 纯 JSON 对象
+      - ```json ... ``` 代码块
+      - ``` ... ``` 代码块 (无语言标记)
+      - 已解析的 dict 对象
+    """
+    if isinstance(text, dict):
+        return text
     text = text.strip()
     code_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
     if code_match:
@@ -97,7 +109,6 @@ def load_optimizer_prompt():
 
 
 def build_user_message(rollout_data: dict) -> str:
-    """构建给 Optimizer 的用户消息，包含回测摘要和当前 skills。"""
     summary = rollout_data.get("group_summary", {})
     overall = summary.get("overall", {})
 
@@ -142,14 +153,6 @@ def build_user_message(rollout_data: dict) -> str:
 
 
 def run_optimizer(rollout_path: str = None) -> dict:
-    """Run the Optimizer LLM and return edit proposals.
-
-    Args:
-        rollout_path: Path to rollout.json. Default: opt/input/rollout.json
-
-    Returns:
-        {"analysis": "...", "edits": [...], "meta": {...}}
-    """
     if rollout_path is None:
         rollout_path = INPUT_DIR / "rollout.json"
 
@@ -158,20 +161,33 @@ def run_optimizer(rollout_path: str = None) -> dict:
         return {"error": "rollout.json not found at {}".format(rollout_path), "edits": []}
 
     rollout_data = json.loads(rollout_path.read_text(encoding="utf-8"))
-
     system_prompt = load_optimizer_prompt()
     user_message = build_user_message(rollout_data)
 
     from langchain_core.messages import SystemMessage, HumanMessage
 
-    try:
-        llm = _create_optimizer_llm()
-        response = llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_message),
-        ])
-    except Exception as e:
-        return {"error": "Optimizer LLM call failed: {}".format(e), "edits": []}
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            llm = _create_optimizer_llm()
+            response = llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_message),
+            ])
+            break
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                print("  Optimizer attempt {}/{} failed: {}. Retrying in {}s...".format(
+                    attempt, MAX_RETRIES, e, RETRY_DELAY))
+                time.sleep(RETRY_DELAY)
+            else:
+                import traceback
+                return {
+                    "error": "Optimizer LLM call failed after {} retries: {}".format(MAX_RETRIES, last_error),
+                    "edits": [],
+                    "traceback": traceback.format_exc()[-500:]
+                }
 
     try:
         result = _extract_json(str(response.content))

@@ -33,6 +33,12 @@ rule: 如果你不确定或看空：输出 Hold / Underweight / Sell
 rule: 聚焦短期：评估的是"明天会不会涨 1% 以上"，不是"这个公司好不好"
 rule: 如果 Bull 给出明确超跌反弹信号且 Bear 无重大流动性风险，即使预期涨幅在0.8-1.0%也可考虑Buy
 
+## decision_rules_anti
+<!-- SKILLOPT-EDITABLE -->
+
+anti: 不要用Q1季报的毛利率、净利润增速、ROE、PE估值等长期财务数据否决一日游信号。24小时内毛利/PE不会改变股价，这些数据与24h涨跌无关
+anti: 不要因为"行业产能过剩""全行业亏损"等长期行业判断否决一日游信号。一日游只关心明天资金会不会来
+
 ## risk_reminders
 <!-- SKILLOPT-EDITABLE -->
 

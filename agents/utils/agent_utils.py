@@ -288,6 +288,110 @@ def get_sector_data() -> str:
     return "\n\n".join(parts)
 
 
+_SECTOR_FUND_FLOW_CACHE = {}
+_SECTOR_FUND_FLOW_CACHE_FILE = None
+
+
+def _get_sector_fund_flow_cache_path():
+    global _SECTOR_FUND_FLOW_CACHE_FILE
+    if _SECTOR_FUND_FLOW_CACHE_FILE is not None:
+        return _SECTOR_FUND_FLOW_CACHE_FILE
+    from pathlib import Path as _Path
+    project = _Path(__file__).parent.parent.parent
+    cache_dir = project / "data" / "overview_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _SECTOR_FUND_FLOW_CACHE_FILE = cache_dir / "sector_fund_flow_cache.json"
+    return _SECTOR_FUND_FLOW_CACHE_FILE
+
+
+def get_sector_fund_flow_data(days: int = 3) -> str:
+    """获取板块资金流排名 (今日/5日/10日)。
+
+    用于识别主力资金在板块间的流向，辅助判断板块强弱。
+    同一日内缓存复用，内存+磁盘双层 (每日数据不变)。
+
+    Args:
+        days: 拉取天数 (3=今日/5日/10日三个维度)
+
+    Returns:
+        Markdown 格式的板块资金流报告
+    """
+    from datetime import date
+    cache_key = str(date.today())
+    if cache_key in _SECTOR_FUND_FLOW_CACHE:
+        return _SECTOR_FUND_FLOW_CACHE[cache_key]
+
+    cache_path = _get_sector_fund_flow_cache_path()
+    if cache_path.exists():
+        try:
+            import json as _json
+            saved = _json.loads(cache_path.read_text(encoding="utf-8"))
+            if saved.get("date") == cache_key and saved.get("data"):
+                _SECTOR_FUND_FLOW_CACHE[cache_key] = saved["data"]
+                return saved["data"]
+        except Exception:
+            pass
+
+    from dataflows.interface import route_to_vendor
+    data = route_to_vendor("get_sector_fund_flow", config={}, days=days)
+    if not data:
+        return "板块资金流数据获取失败"
+
+    lines = ["## 板块资金流排名\n"]
+    period_names = {"today": "今日", "5_day": "5日", "10_day": "10日"}
+    for key, label in period_names.items():
+        entries = data.get(key, [])
+        if not entries:
+            continue
+        lines.append(f"### {label}\n")
+        lines.append("| 板块 | 涨跌幅 | 主力净流入(亿) | 净占比 |")
+        lines.append("|------|--------|---------------|--------|")
+        for e in entries[:10]:
+            inflow = e.get("net_inflow", 0)
+            pct = e.get("pct_chg", 0)
+            ratio = e.get("net_ratio", 0)
+            lines.append(
+                "| {} | {:+.2f}% | {:+.2f} | {:.2f}% |".format(
+                    e.get("name", ""), pct, inflow / 1e8, ratio
+                )
+            )
+        lines.append("")
+
+    # Add portfolio-sector mapping
+    sector_map = {
+        "光伏设备": "光伏", "风电设备": "风电", "电源设备": "风电",
+        "计算机设备": "AI", "半导体": "AI", "软件开发": "AI", "IT服务": "AI",
+        "电池": "储能", "能源金属": "储能", "电力行业": "储能",
+        "光学光电子": "视觉", "电子元件": "视觉", "汽车零部件": "视觉",
+    }
+    lines.append("### 与持仓板块的映射\n")
+    found_any = False
+    for key in period_names.keys():
+        entries = data.get(key, [])
+        for e in entries:
+            mapped = sector_map.get(e.get("name", ""), "")
+            if mapped:
+                lines.append(
+                    "- {} → **{}** ({}: 涨{:+.2f}% 净流入{:+.2f}亿)".format(
+                        e.get("name", ""), mapped, key,
+                        e.get("pct_chg", 0), e.get("net_inflow", 0) / 1e8
+                    )
+                )
+                found_any = True
+    if not found_any:
+        lines.append("(未匹配到持仓板块)\n")
+
+    result = "\n".join(lines)
+    _SECTOR_FUND_FLOW_CACHE[cache_key] = result
+    try:
+        import json as _json
+        cache_path = _get_sector_fund_flow_cache_path()
+        _json.dump({"date": cache_key, "data": result}, cache_path.open("w", encoding="utf-8"), ensure_ascii=False)
+    except Exception:
+        pass
+    return result
+
+
 # ============================================================
 # 舆论监控工具（基于Agent-Reach）
 # ============================================================
@@ -486,6 +590,7 @@ MARKET_TOOLS = [
     get_market_sentiment_data,
     get_sector_data,
     get_north_flow_data,
+    get_sector_fund_flow_data,
     check_liquidity_risk,
 ]
 
@@ -504,4 +609,5 @@ POLICY_TOOLS = [
     get_sector_data,
     get_north_flow_data,
     get_market_sentiment_data,
+    get_sector_fund_flow_data,
 ]

@@ -369,6 +369,7 @@ class AStockTradingGraph:
             "final_decision": "",
             "market_overview": self.config.get("market_overview", ""),
             "sector_context": self.config.get("sector_context", ""),
+            "data_context": self.config.get("data_context", ""),
         }
 
         # 运行图
@@ -574,12 +575,14 @@ class AStockTradingGraph:
         return rating, action, confidence
 
     def _save_result(self, result: Dict):
-        """保存分析结果到项目 data/results/ 目录（MD + JSON 双写）"""
+        """保存分析结果到 project data/results/ 目录（MD + JSON 双写）"""
         try:
             home_dir = Path(self.config.get("results_dir", str(Path(__file__).parent.parent / "data" / "results")))
             home_dir.mkdir(parents=True, exist_ok=True)
 
-            filename = f"{result['symbol']}_{result['trade_date']}_analysis"
+            version = self.config.get("agent_version", "")
+            ver_suffix = f"_{version}" if version else ""
+            filename = f"{result['symbol']}_{result['trade_date']}{ver_suffix}_analysis"
             md_path = home_dir / f"{filename}.md"
 
             md = to_markdown(result, title=f"分析结果 — {result.get('stock_name','')} ({result['symbol']})")
@@ -611,6 +614,7 @@ class AStockTradingGraph:
                 "symbol": symbol,
                 "stock_name": stock_name,
                 "trade_date": trade_date,
+                "agent_version": self.config.get("agent_version", ""),
                 "rounds": {
                     "investment_debate": final_state.get("investment_debate_state", {}).get("count", 0),
                     "risk_debate": final_state.get("risk_debate_state", {}).get("count", 0),

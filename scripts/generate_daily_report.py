@@ -14,28 +14,28 @@ STOCKS = [
     ("sh600438", "Tongwei", "Solar"),
     ("sh601012", "LONGi", "Solar"),
     ("sz300274", "Sungrow", "Solar"),
-    ("sh688599", "Trina", "Solar"),
     ("sz300751", "Maxwell", "Solar"),
+    ("sz002459", "JA", "Solar"),
     ("sz002202", "Goldwind", "Wind"),
     ("sh601615", "MingYang", "Wind"),
     ("sh603606", "OrientCable", "Wind"),
     ("sz300850", "Xinqianglian", "Wind"),
-    ("sz001289", "Longyuan", "Wind"),
+    ("sz300129", "TSP", "Wind"),
     ("sz002230", "iFlytek", "AI"),
     ("sh688256", "Cambricon", "AI"),
-    ("sz000977", "Inspur", "AI"),
     ("sz300308", "Zhongji", "AI"),
     ("sz300033", "Hithink", "AI"),
+    ("sh688041", "Hygon", "AI"),
     ("sz300750", "CATL", "Energy"),
     ("sz300014", "EVE", "Energy"),
     ("sz002074", "Guoxuan", "Energy"),
-    ("sz002460", "Ganfeng", "Energy"),
-    ("sh601727", "SEC", "Energy"),
+    ("sz300438", "GreatPower", "Energy"),
+    ("sz300073", "Easpring", "Energy"),
     ("sz002415", "Hikvision", "Vision"),
     ("sz002236", "Dahua", "Vision"),
-    ("sz002920", "DesaySV", "Vision"),
-    ("sz300496", "ThunderSoft", "Vision"),
     ("sh603501", "WillSemi", "Vision"),
+    ("sz002456", "OFilm", "Vision"),
+    ("sh688400", "Luster", "Vision"),
 ]
 
 RATING_EMOJI = {"Overweight": "OW", "Buy": "BUY", "Hold": "HOLD", "Underweight": "UW", "Sell": "SELL"}
@@ -53,12 +53,18 @@ def get_kline(sid):
 
 def load_predictions(date_str):
     preds = {}
-    for f in RESULTS_DIR.glob("*_" + date_str + "_analysis.cache.json"):
-        try:
-            d = json.loads(f.read_text(encoding="utf-8"))
-            preds[d["symbol"]] = d
-        except Exception:
-            pass
+    for pattern in [f"*_{date_str}_v10_analysis.cache.json", f"*_{date_str}_analysis.cache.json"]:
+        for f in RESULTS_DIR.glob(pattern):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                code = d.get("symbol", "")
+                if not code:
+                    code = f.stem.split("_")[0]
+                    d["symbol"] = code
+                if code not in preds:
+                    preds[code] = d
+            except Exception:
+                pass
     return preds
 
 
@@ -71,14 +77,15 @@ today = datetime.now()
 today_str = today.strftime("%Y-%m-%d")
 
 all_dates = set()
-for f in RESULTS_DIR.glob("*_analysis.cache.json"):
-    try:
-        d = json.loads(f.read_text(encoding="utf-8"))
-        td = d.get("trade_date", "")
-        if td:
-            all_dates.add(td)
-    except Exception:
-        pass
+for pattern in ["*_v10_analysis.cache.json", "*_analysis.cache.json"]:
+    for f in RESULTS_DIR.glob(pattern):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+            td = d.get("trade_date", "")
+            if td:
+                all_dates.add(td)
+        except Exception:
+            pass
 
 sorted_dates = sorted(all_dates)
 if len(sorted_dates) < 1:
