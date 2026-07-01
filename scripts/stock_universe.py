@@ -56,7 +56,7 @@ def stocks_for_collector():
 
     result = []
     for code, name, sector in STOCK_UNIVERSE:
-        prefix = "sh" if code.startswith(("6", "0", "1", "9")) else "sz"
+        prefix = "sh" if code.startswith(("6", "9")) else "sz"
         result.append(("{}{}".format(prefix, code), name_map.get(name, name), sector_map.get(sector, sector)))
     return result
 

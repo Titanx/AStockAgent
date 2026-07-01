@@ -233,3 +233,22 @@ DayTradeSelfOptAgent/
 ## License
 
 [Apache License 2.0](./LICENSE)
+
+## 设计理念：用主观方法论做量化的事
+
+本项目不是一个传统的量化交易系统（没有因子挖掘、没有回测引擎、没有实盘对接），而是一个**以主观交易方法论为基础的程序化多 Agent 系统**。
+
+- **主观体现在**：Bull/Bear 辩论、PM 风控、ResearchManager 裁决 — 这些 Agent 的内部逻辑是交易员经验规则的 prompt 化，是一个"多个 AI 模拟交易团队开会讨论然后投票"的过程。
+- **量化体现在**：一日游策略天然产生高密度反馈样本（每日 25 只 × 月 500 样本），通过回测计算 HIT/MISS/STEP/AVOID 四维指标，用 SkillOpt 闭环自动优化 Agent prompt，类似 DL 的梯度下降→参数更新过程。
+
+核心信念：交易领域的最佳实践仍大量存在于经验规则中，与其强行做纯数据驱动的量化模型，不如先把这些经验规则系统化、程序化、可验证，让 AI 来承担"基于规则做判断"的执行层面工作。
+
+## 参考项目
+
+| 项目 | 说明 | 链接 |
+|------|------|------|
+| **AKShare** | A股/期货/外汇全品类数据接口，封装东方财富/新浪/腾讯等30+免费源 | [github.com/akfamily/akshare](https://github.com/akfamily/akshare) |
+| **LangGraph** | 有状态多角色 Agent 图编排框架，支撑 10-agent 辩论→裁决→决策的复杂工作流 | [github.com/langchain-ai/langgraph](https://github.com/langchain-ai/langgraph) |
+| **DeepSeek** | 高性价比 LLM，单股完整分析链路成本≈0.3元 | [github.com/deepseek-ai](https://github.com/deepseek-ai) |
+| **mootdx** | TDX 行情协议 TCP 直连通道，已评估可作为 AKShare 晚间不稳定时的备选数据源 | [github.com/bopo/mootdx](https://github.com/bopo/mootdx) |
+| **a-stock-data** | A股数据获取架构参考 (本地 Skill)，提供东财直连/防封节流/多源14级回退等稳定性最佳实践 | — |
